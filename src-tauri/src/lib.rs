@@ -7,7 +7,8 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, Runtime,
+    webview::WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, Position, Runtime, WebviewUrl,
 };
 use thiserror::Error;
 
@@ -319,7 +320,8 @@ async fn complete_login(
 }
 
 fn is_pool_platform(platform: &str) -> bool {
-    matches!(platform, "openai" | "anthropic")
+    // openai=Codex, anthropic=Claude, xai/grok=Grok (when the gateway exposes them).
+    matches!(platform, "openai" | "anthropic" | "xai" | "grok")
 }
 
 fn account_from_value(value: &Value) -> Option<PoolAccount> {
@@ -342,6 +344,7 @@ fn account_from_value(value: &Value) -> Option<PoolAccount> {
     let plan = value
         .pointer("/extra/plan_type")
         .or_else(|| value.pointer("/extra/subscription_tier"))
+        .or_else(|| value.pointer("/extra/grok_billing_snapshot/plan"))
         .or_else(|| value.get("subscription_tier"))
         .and_then(Value::as_str)
         .map(str::to_string);
@@ -405,8 +408,14 @@ async fn fetch_account_items_for_platform(
 
 async fn fetch_pool_account_items(state: &ApiState) -> Result<Vec<Value>, PetError> {
     let mut items = Vec::new();
-    for platform in ["openai", "anthropic"] {
-        items.extend(fetch_account_items_for_platform(state, platform).await?);
+    // Fetch each known pool family; missing platforms simply return empty pages.
+    for platform in ["openai", "anthropic", "xai", "grok"] {
+        match fetch_account_items_for_platform(state, platform).await {
+            Ok(page) => items.extend(page),
+            // Ignore unknown-platform 4xx so older gateways without Grok still work.
+            Err(PetError::Api(_)) => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(items)
 }
@@ -531,6 +540,90 @@ fn parse_cached_quota(
     })
 }
 
+fn grok_billing_snapshot(data: &Value) -> Option<&Value> {
+    data.pointer("/extra/grok_billing_snapshot")
+        .or_else(|| data.get("grok_billing_snapshot"))
+        .or_else(|| {
+            (data.get("usage_percent").is_some() || data.get("used_percent").is_some())
+                .then_some(data)
+        })
+}
+
+fn parse_grok_quota(
+    account_id: i64,
+    account_name: String,
+    data: &Value,
+    source: &str,
+) -> Option<QuotaSnapshot> {
+    let snapshot = grok_billing_snapshot(data)?;
+    let percent = |key: &str| {
+        snapshot.get(key).and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|raw| raw.parse::<f64>().ok()))
+        })
+    };
+
+    // usage_percent is the current Grok billing period (weekly for SuperGrok).
+    // used_percent is the monthly included-credit ratio and is only a fallback.
+    let weekly_used = percent("usage_percent");
+    let (used, reset_at, updated_at, window_label) = if let Some(used) = weekly_used {
+        let period_type = snapshot
+            .get("period_type")
+            .and_then(Value::as_str)
+            .unwrap_or("weekly");
+        let label = if period_type == "monthly" {
+            "月"
+        } else {
+            "7d"
+        };
+        (
+            used,
+            snapshot
+                .get("period_end")
+                .or_else(|| snapshot.get("billing_period_end"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            snapshot
+                .get("weekly_updated_at")
+                .or_else(|| snapshot.get("updated_at"))
+                .or_else(|| snapshot.get("fetched_at"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            label,
+        )
+    } else {
+        (
+            percent("used_percent")?,
+            snapshot
+                .get("billing_period_end")
+                .or_else(|| snapshot.get("period_end"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            snapshot
+                .get("monthly_updated_at")
+                .or_else(|| snapshot.get("updated_at"))
+                .or_else(|| snapshot.get("fetched_at"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            "月",
+        )
+    };
+    let used = used.clamp(0.0, 100.0);
+
+    Some(QuotaSnapshot {
+        account_id,
+        account_name,
+        used_percent: used,
+        remaining_percent: (100.0 - used).max(0.0),
+        reset_at,
+        updated_at: updated_at
+            .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)),
+        source: source.to_string(),
+        window_label: Some(window_label.to_string()),
+    })
+}
+
 fn usage_window_reset_at(window: &Value) -> Option<String> {
     if let Some(resets_at) = window.get("resets_at").and_then(Value::as_str) {
         if !resets_at.is_empty() {
@@ -562,7 +655,10 @@ fn parse_usage_windows(data: &Value) -> Vec<QuotaWindow> {
     let mut windows = Vec::new();
     // Match admin UI order: 5h (session) then 7d (weekly).
     for (key, label) in [("five_hour", "5h"), ("seven_day", "7d")] {
-        if let Some(window) = data.get(key).and_then(|value| parse_usage_window(value, label)) {
+        if let Some(window) = data
+            .get(key)
+            .and_then(|value| parse_usage_window(value, label))
+        {
             windows.push(window);
         }
     }
@@ -624,10 +720,7 @@ fn row_from_windows(
 
 fn snapshot_to_row(snapshot: QuotaSnapshot, account: &PoolAccount) -> AccountQuotaRow {
     let windows = vec![QuotaWindow {
-        label: snapshot
-            .window_label
-            .clone()
-            .unwrap_or_else(|| "7d".into()),
+        label: snapshot.window_label.clone().unwrap_or_else(|| "7d".into()),
         used_percent: snapshot.used_percent,
         remaining_percent: snapshot.remaining_percent,
         reset_at: snapshot.reset_at.clone(),
@@ -695,7 +788,10 @@ async fn quota_for_openai_account(
             if let Ok(usage) = authorized_request(
                 state,
                 Method::GET,
-                &format!("/admin/accounts/{}/usage?source=active&force=true", account.id),
+                &format!(
+                    "/admin/accounts/{}/usage?source=active&force=true",
+                    account.id
+                ),
             )
             .await
             {
@@ -791,6 +887,56 @@ async fn quota_for_anthropic_account(
     }
 }
 
+async fn quota_for_grok_account(
+    state: &ApiState,
+    account: &PoolAccount,
+    list_item: Option<&Value>,
+    force: bool,
+) -> AccountQuotaRow {
+    if force {
+        // Newer gateways may refresh and return the Grok snapshot through this endpoint.
+        // Older gateways return 500, in which case the account snapshot remains usable.
+        if let Ok(active) = authorized_request(
+            state,
+            Method::GET,
+            &format!(
+                "/admin/accounts/{}/usage?source=active&force=true",
+                account.id
+            ),
+        )
+        .await
+        {
+            if let Some(snapshot) =
+                parse_grok_quota(account.id, account.name.clone(), &active, "active")
+            {
+                return snapshot_to_row(snapshot, account);
+            }
+        }
+    }
+
+    if let Some(item) = list_item {
+        if let Some(snapshot) = parse_grok_quota(account.id, account.name.clone(), item, "cached") {
+            return snapshot_to_row(snapshot, account);
+        }
+    }
+
+    if let Ok(detail) = authorized_request(
+        state,
+        Method::GET,
+        &format!("/admin/accounts/{}", account.id),
+    )
+    .await
+    {
+        if let Some(snapshot) =
+            parse_grok_quota(account.id, account.name.clone(), &detail, "cached")
+        {
+            return snapshot_to_row(snapshot, account);
+        }
+    }
+
+    empty_row(account)
+}
+
 async fn quota_for_account(
     state: &ApiState,
     account: &PoolAccount,
@@ -799,7 +945,9 @@ async fn quota_for_account(
 ) -> AccountQuotaRow {
     match account.platform.as_str() {
         "anthropic" => quota_for_anthropic_account(state, account, force).await,
-        _ => quota_for_openai_account(state, account, list_item, force).await,
+        "openai" => quota_for_openai_account(state, account, list_item, force).await,
+        "xai" | "grok" => quota_for_grok_account(state, account, list_item, force).await,
+        _ => empty_row(account),
     }
 }
 
@@ -823,7 +971,8 @@ async fn refresh_quota(
     let platform = account
         .get("platform")
         .and_then(Value::as_str)
-        .unwrap_or("openai");
+        .unwrap_or("openai")
+        .to_string();
 
     if platform == "anthropic" {
         let path = if force {
@@ -835,6 +984,28 @@ async fn refresh_quota(
         let source = if force { "active" } else { "cached" };
         return parse_usage_quota(account_id, account_name, &usage, source).ok_or_else(|| {
             PetError::Api("该 Claude 账号还没有可用的额度数据，请双击宠物主动刷新".into())
+        });
+    }
+
+    if matches!(platform.as_str(), "xai" | "grok") {
+        if force {
+            if let Ok(active) = authorized_request(
+                &state,
+                Method::GET,
+                &format!("/admin/accounts/{account_id}/usage?source=active&force=true"),
+            )
+            .await
+            {
+                if let Some(snapshot) =
+                    parse_grok_quota(account_id, account_name.clone(), &active, "active")
+                {
+                    return Ok(snapshot);
+                }
+            }
+        }
+
+        return parse_grok_quota(account_id, account_name, &account, "cached").ok_or_else(|| {
+            PetError::Api("该 Grok 账号还没有可用的账期额度数据，请刷新后重试".into())
         });
     }
 
@@ -874,7 +1045,7 @@ async fn refresh_pool_quotas(
 
     if accounts.is_empty() {
         return Err(PetError::Api(
-            "账号池中没有可用的 OpenAI/Codex 或 Claude 账号".into(),
+            "账号池中没有可用的 Codex、Claude 或 Grok 账号".into(),
         ));
     }
 
@@ -941,6 +1112,7 @@ fn platform_display_name(platform: &str) -> &'static str {
     match platform {
         "anthropic" => "Claude",
         "openai" => "Codex",
+        "xai" | "grok" => "Grok",
         _ => "账号",
     }
 }
@@ -967,6 +1139,7 @@ fn tray_status_dot(platform: &str, remaining: Option<f64>) -> &'static str {
     match platform {
         "anthropic" => "🟢",
         "openai" => "🔵",
+        "xai" | "grok" => "⚫",
         _ => "⚪",
     }
 }
@@ -1040,10 +1213,7 @@ fn tray_window_labels(account: &TrayAccountPayload) -> Vec<(String, String)> {
     if account.windows.is_empty() {
         return vec![(
             format!("account-{}", account.id),
-            format!(
-                "{} {} ({})  --%{}",
-                dot, platform, account.name, inactive
-            ),
+            format!("{} {} ({})  --%{}", dot, platform, account.name, inactive),
         )];
     }
 
@@ -1092,6 +1262,140 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+const ACTION_MENU_LABEL: &str = "action-menu";
+const ACTION_MENU_WIDTH: f64 = 176.0;
+const ACTION_MENU_HEIGHT: f64 = 196.0;
+
+fn clamp_action_menu_position<R: Runtime>(
+    app: &AppHandle<R>,
+    x: i32,
+    y: i32,
+) -> PhysicalPosition<i32> {
+    let menu_w = ACTION_MENU_WIDTH.round() as i32;
+    let menu_h = ACTION_MENU_HEIGHT.round() as i32;
+    let mut pos = PhysicalPosition::new(x, y);
+
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|window| window.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let area = monitor.work_area();
+        let min_x = area.position.x;
+        let min_y = area.position.y;
+        let max_x = area.position.x + area.size.width as i32 - menu_w;
+        let max_y = area.position.y + area.size.height as i32 - menu_h;
+        pos.x = pos.x.clamp(min_x, max_x.max(min_x));
+        pos.y = pos.y.clamp(min_y, max_y.max(min_y));
+    }
+    pos
+}
+
+/// Lightweight floating panel (separate window) so the transparent pet stays tiny.
+/// Coordinates may arrive as floats from the webview cursor API — round to physical px.
+#[tauri::command]
+fn show_action_menu(app: AppHandle, x: f64, y: f64) -> Result<(), PetError> {
+    let position = clamp_action_menu_position(&app, x.round() as i32, y.round() as i32);
+
+    if let Some(window) = app.get_webview_window(ACTION_MENU_LABEL) {
+        window
+            .set_position(Position::Physical(position))
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        window
+            .show()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        window
+            .set_focus()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        let _ = window.emit("action-menu-shown", ());
+        return Ok(());
+    }
+
+    let window =
+        WebviewWindowBuilder::new(&app, ACTION_MENU_LABEL, WebviewUrl::App("menu.html".into()))
+            .title("操作")
+            .inner_size(ACTION_MENU_WIDTH, ACTION_MENU_HEIGHT)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .focused(true)
+            .visible(false)
+            .build()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+
+    window
+        .set_position(Position::Physical(position))
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    window
+        .show()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_action_menu(app: AppHandle) -> Result<(), PetError> {
+    if let Some(window) = app.get_webview_window(ACTION_MENU_LABEL) {
+        window
+            .hide()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+    }
+    Ok(())
+}
+
+const SETTINGS_LABEL: &str = "settings";
+const SETTINGS_WIDTH: f64 = 380.0;
+const SETTINGS_HEIGHT: f64 = 640.0;
+
+/// Dedicated settings dialog so the transparent pet window stays visible and undocked.
+#[tauri::command]
+fn show_settings_window(app: AppHandle) -> Result<(), PetError> {
+    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        window
+            .show()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        window
+            .set_focus()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        let _ = window.center();
+        let _ = window.emit("settings-window-shown", ());
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        SETTINGS_LABEL,
+        WebviewUrl::App("settings.html".into()),
+    )
+    .title("Sub2API Pet 设置")
+    .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+    .decorations(true)
+    .transparent(false)
+    .always_on_top(true)
+    .skip_taskbar(false)
+    .resizable(false)
+    .focused(true)
+    .center()
+    .build()
+    .map_err(|error| PetError::Api(error.to_string()))?;
+
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_settings_window(app: AppHandle) -> Result<(), PetError> {
+    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        window
+            .hide()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        let _ = app.emit("settings-closed", ());
+    }
+    Ok(())
+}
+
 fn build_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     payload: &TrayMenuPayload,
@@ -1099,11 +1403,7 @@ fn build_tray_menu<R: Runtime>(
     let pool = MenuItem::with_id(app, "pool", "账号池", true, None::<&str>)?;
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = vec![Box::new(pool)];
 
-    if let Some(synced) = payload
-        .synced_at
-        .as_deref()
-        .and_then(format_tray_synced_at)
-    {
+    if let Some(synced) = payload.synced_at.as_deref().and_then(format_tray_synced_at) {
         items.push(Box::new(MenuItem::with_id(
             app,
             "synced-at",
@@ -1136,6 +1436,13 @@ fn build_tray_menu<R: Runtime>(
     }
 
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    items.push(Box::new(MenuItem::with_id(
+        app,
+        "refresh",
+        "刷新额度",
+        true,
+        None::<&str>,
+    )?));
     items.push(Box::new(MenuItem::with_id(
         app,
         "open-admin",
@@ -1191,6 +1498,9 @@ pub fn run() {
     tauri::Builder::default()
         .manage(ApiState { client })
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin({
             #[cfg(target_os = "macos")]
             {
@@ -1230,6 +1540,10 @@ pub fn run() {
                         "pool" | "show" => {
                             show_main_window(app);
                         }
+                        "refresh" => {
+                            show_main_window(app);
+                            let _ = app.emit("pet-menu-action", "refresh");
+                        }
                         "open-admin" => {
                             show_main_window(app);
                             let _ = app.emit("open-admin", ());
@@ -1250,9 +1564,24 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    if window.label() == "main" {
+                        // Pet never quits from the close chrome (it has none); tray owns lifecycle.
+                        let _ = window.emit("main-close-requested", ());
+                    } else if window.label() == SETTINGS_LABEL {
+                        let _ = window.hide();
+                        let _ = window.app_handle().emit("settings-closed", ());
+                    } else {
+                        let _ = window.hide();
+                    }
+                }
+                // Dismiss the floating action panel when it loses focus (click outside).
+                tauri::WindowEvent::Focused(false) if window.label() == ACTION_MENU_LABEL => {
+                    let _ = window.hide();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1264,7 +1593,11 @@ pub fn run() {
             has_session,
             logout,
             quit_app,
-            update_tray_menu
+            update_tray_menu,
+            show_action_menu,
+            hide_action_menu,
+            show_settings_window,
+            hide_settings_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sub2API Pet");
@@ -1331,6 +1664,60 @@ mod tests {
         assert_eq!(snapshot.used_percent, 27.0);
         assert_eq!(snapshot.remaining_percent, 73.0);
         assert_eq!(snapshot.source, "active");
+    }
+
+    #[test]
+    fn grok_quota_prefers_weekly_billing_period() {
+        let account = json!({
+            "extra": {
+                "grok_billing_snapshot": {
+                    "period_type": "weekly",
+                    "period_end": "2026-07-29T03:04:09Z",
+                    "usage_percent": 43,
+                    "used_percent": 27.32,
+                    "weekly_updated_at": "2026-07-24T09:18:52Z"
+                }
+            }
+        });
+
+        let snapshot = parse_grok_quota(13, "Grok Main".into(), &account, "cached").unwrap();
+        assert_eq!(snapshot.used_percent, 43.0);
+        assert_eq!(snapshot.remaining_percent, 57.0);
+        assert_eq!(snapshot.window_label.as_deref(), Some("7d"));
+        assert_eq!(snapshot.reset_at.as_deref(), Some("2026-07-29T03:04:09Z"));
+        assert_eq!(snapshot.updated_at, "2026-07-24T09:18:52Z");
+    }
+
+    #[test]
+    fn grok_quota_falls_back_to_monthly_included_usage() {
+        let account = json!({
+            "extra": {
+                "grok_billing_snapshot": {
+                    "billing_period_end": "2026-08-01T00:00:00Z",
+                    "used_percent": "27.32",
+                    "monthly_updated_at": "2026-07-24T09:18:52Z"
+                }
+            }
+        });
+
+        let snapshot = parse_grok_quota(13, "Grok Main".into(), &account, "cached").unwrap();
+        assert_eq!(snapshot.used_percent, 27.32);
+        assert!((snapshot.remaining_percent - 72.68).abs() < f64::EPSILON);
+        assert_eq!(snapshot.window_label.as_deref(), Some("月"));
+        assert_eq!(snapshot.reset_at.as_deref(), Some("2026-08-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn grok_quota_requires_a_billing_snapshot() {
+        let account = json!({
+            "extra": {
+                "grok_usage_snapshot": {
+                    "requests": { "limit": 8300, "remaining": 8300 }
+                }
+            }
+        });
+
+        assert!(parse_grok_quota(13, "Grok Main".into(), &account, "cached").is_none());
     }
 
     #[test]

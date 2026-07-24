@@ -4,3 +4,5 @@ target
 src-tauri/target
 .DS_Store
 *.log
+.tauri/*.key
+.tauri/*.key.pub

@@ -17,8 +17,8 @@
         "title": "Sub2API Pet",
         "width": 200,
         "height": 210,
-        "minWidth": 150,
-        "minHeight": 180,
+        "minWidth": 48,
+        "minHeight": 48,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -34,6 +34,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Codex weekly quota desktop pet",
@@ -44,5 +45,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUyNDY1QjIyRjk2ODAzNEEKUldSS0EyajVJbHRHNGhveGhYeE9PYW83MG9xQ3Mwd2FaRy9CMzRVNnFkU0RjWERiMXRSUWNIcEIK",
+      "endpoints": [
+        "https://github.com/boycott96/sub2api-token/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

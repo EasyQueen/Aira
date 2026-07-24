@@ -1,0 +1,44 @@
+@import './style.css';
+
+html,
+body.settings-window-body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #f7f9fc;
+}
+
+.settings-window-shell {
+  width: 100%;
+  height: 100%;
+  background: #f7f9fc;
+}
+
+.settings-window-shell .settings-sheet {
+  position: relative;
+  inset: auto;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #fafcff;
+  box-shadow: none;
+  backdrop-filter: none;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.settings-window-shell .settings-sheet.is-hidden {
+  display: flex !important;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
