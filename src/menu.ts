@@ -2,7 +2,7 @@ import './menu.css'
 import { emitTo } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
-import { createIcons, ExternalLink, LogOut, RefreshCw, Settings, X } from 'lucide'
+import { createIcons, ExternalLink, LayoutDashboard, LogOut, RefreshCw, Settings, X } from 'lucide'
 
 const win = getCurrentWindow()
 
@@ -14,11 +14,14 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <i data-lucide="x"></i>
       </button>
     </header>
+    <button type="button" class="menu-item" data-action="panel">
+      <i data-lucide="layout-dashboard"></i><span>打开账号面板</span>
+    </button>
     <button type="button" class="menu-item" data-action="refresh">
       <i data-lucide="refresh-cw"></i><span>刷新额度</span>
     </button>
     <button type="button" class="menu-item" data-action="admin">
-      <i data-lucide="external-link"></i><span>打开管理面板</span>
+      <i data-lucide="external-link"></i><span>打开网页管理</span>
     </button>
     <button type="button" class="menu-item" data-action="settings">
       <i data-lucide="settings"></i><span>设置</span>
@@ -31,7 +34,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 `
 
 createIcons({
-  icons: { ExternalLink, LogOut, RefreshCw, Settings, X },
+  icons: { ExternalLink, LogOut, RefreshCw, Settings, X, LayoutDashboard },
   attrs: { 'stroke-width': 2 },
 })
 

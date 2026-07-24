@@ -1382,7 +1382,7 @@ function renderPool(): void {
   void syncTrayMenu()
 }
 
-async function syncTrayMenu(): Promise<void> {
+async function syncTrayMenu(options?: { refreshing?: boolean }): Promise<void> {
   if (!isDesktop) return
   try {
     await invoke('update_tray_menu', {
@@ -1411,6 +1411,7 @@ async function syncTrayMenu(): Promise<void> {
           }
         }),
         synced_at: latestUpdatedAt(),
+        refreshing: options?.refreshing ?? refreshing,
       },
     })
   } catch {
@@ -1422,6 +1423,7 @@ async function refreshQuota(force: boolean): Promise<void> {
   if (refreshing || !connected) return
   refreshing = true
   setMood('refreshing')
+  void syncTrayMenu({ refreshing: true })
   if (force) showSpeechBubble(pickLine(['去查最新额度啦…', '稍等，我刷新一下', '正在同步账号池…']), 2200)
   quotaDock.classList.add('is-refreshing')
   try {
@@ -1455,6 +1457,7 @@ async function refreshQuota(force: boolean): Promise<void> {
   } finally {
     refreshing = false
     quotaDock.classList.remove('is-refreshing')
+    void syncTrayMenu({ refreshing: false })
   }
 }
 
@@ -1723,6 +1726,16 @@ async function openActionMenu(): Promise<void> {
 
 async function handleMenuAction(action: string): Promise<void> {
   switch (action) {
+    case 'panel':
+      // Large account info window listing every account's quota.
+      if (isDesktop) {
+        try {
+          await invoke('show_account_panel')
+        } catch (error) {
+          showToast(errorMessage(error), 'error')
+        }
+      }
+      break
     case 'refresh':
       await refreshQuota(true)
       break

@@ -14,6 +14,7 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         menu: resolve(__dirname, 'menu.html'),
         settings: resolve(__dirname, 'settings.html'),
+        panel: resolve(__dirname, 'panel.html'),
       },
     },
   },

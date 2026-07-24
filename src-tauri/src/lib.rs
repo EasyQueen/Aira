@@ -3,6 +3,7 @@ use reqwest::{Client, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
+use std::sync::Mutex;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -15,6 +16,12 @@ use thiserror::Error;
 const KEYRING_SERVICE: &str = "com.sub2api.pet";
 const KEYRING_USER: &str = "active-session";
 const TRAY_ID: &str = "main-tray";
+/// Normal OS window showing every account's quota (opened from the native menu).
+const ACCOUNT_PANEL_LABEL: &str = "account-panel";
+const ACCOUNT_PANEL_WIDTH: f64 = 520.0;
+const ACCOUNT_PANEL_HEIGHT: f64 = 760.0;
+const ACCOUNT_PANEL_MIN_WIDTH: f64 = 420.0;
+const ACCOUNT_PANEL_MIN_HEIGHT: f64 = 560.0;
 
 #[derive(Debug, Error)]
 enum PetError {
@@ -1085,14 +1092,14 @@ async fn logout(state: tauri::State<'_, ApiState>) -> Result<(), PetError> {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct TrayWindowPayload {
     label: String,
     remaining_percent: Option<f64>,
     reset_at: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrayAccountPayload {
     id: i64,
     name: String,
@@ -1101,11 +1108,20 @@ struct TrayAccountPayload {
     windows: Vec<TrayWindowPayload>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct TrayMenuPayload {
     accounts: Vec<TrayAccountPayload>,
     /// RFC3339 timestamp of the latest quota sync.
     synced_at: Option<String>,
+    /// Frontend is mid force-refresh (syncing indicator).
+    #[serde(default)]
+    refreshing: bool,
+}
+
+/// Caches the latest tray payload so the account-panel window can fetch it on open.
+#[derive(Default)]
+struct TrayUiState {
+    payload: Mutex<TrayMenuPayload>,
 }
 
 fn platform_display_name(platform: &str) -> &'static str {
@@ -1180,6 +1196,20 @@ fn format_tray_synced_at(synced_at: &str) -> Option<String> {
     Some(format!("同步于 {}", local.format("%H:%M")))
 }
 
+/// Ten-segment Unicode meter for the tray menu (█ filled = remaining, ░ empty).
+fn quota_bar(remaining: Option<f64>) -> String {
+    const SEGMENTS: usize = 10;
+    match remaining {
+        Some(value) => {
+            let clamped = value.clamp(0.0, 100.0);
+            let filled = ((clamped / 100.0) * SEGMENTS as f64).round() as usize;
+            let filled = filled.min(SEGMENTS);
+            format!("{}{}", "█".repeat(filled), "░".repeat(SEGMENTS - filled))
+        }
+        None => "░".repeat(SEGMENTS),
+    }
+}
+
 fn tray_window_segment(window: &TrayWindowPayload) -> String {
     let percent = window
         .remaining_percent
@@ -1189,11 +1219,13 @@ fn tray_window_segment(window: &TrayWindowPayload) -> String {
         .reset_at
         .as_deref()
         .and_then(format_tray_reset)
-        .map(|value| format!(" · {value} 重置"))
+        // Compact "周一 08:00" → "周一08:00" so the bar row stays tight.
+        .map(|value| format!(" · {}", value.replace(' ', "")))
         .unwrap_or_default();
     format!(
-        "{} {}{}",
+        "{} {} {}{}",
         window_display_name(&window.label),
+        quota_bar(window.remaining_percent),
         percent,
         reset
     )
@@ -1213,7 +1245,14 @@ fn tray_window_labels(account: &TrayAccountPayload) -> Vec<(String, String)> {
     if account.windows.is_empty() {
         return vec![(
             format!("account-{}", account.id),
-            format!("{} {} ({})  --%{}", dot, platform, account.name, inactive),
+            format!(
+                "{} {} {} · {} --%{}",
+                dot,
+                platform,
+                account.name,
+                quota_bar(None),
+                inactive
+            ),
         )];
     }
 
@@ -1228,7 +1267,7 @@ fn tray_window_labels(account: &TrayAccountPayload) -> Vec<(String, String)> {
                 (
                     format!("account-{}-{}", account.id, index),
                     format!(
-                        "{} {} ({}) · {}{}",
+                        "{} {} {} · {}{}",
                         window_dot,
                         platform,
                         account.name,
@@ -1245,7 +1284,7 @@ fn tray_window_labels(account: &TrayAccountPayload) -> Vec<(String, String)> {
     vec![(
         format!("account-{}", account.id),
         format!(
-            "{} {} ({})  {}{}",
+            "{} {} {} · {}{}",
             dot,
             platform,
             account.name,
@@ -1438,6 +1477,13 @@ fn build_tray_menu<R: Runtime>(
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
     items.push(Box::new(MenuItem::with_id(
         app,
+        "open-panel",
+        "打开账号面板",
+        true,
+        None::<&str>,
+    )?));
+    items.push(Box::new(MenuItem::with_id(
+        app,
         "refresh",
         "刷新额度",
         true,
@@ -1446,7 +1492,7 @@ fn build_tray_menu<R: Runtime>(
     items.push(Box::new(MenuItem::with_id(
         app,
         "open-admin",
-        "打开管理面板",
+        "打开网页管理",
         true,
         None::<&str>,
     )?));
@@ -1470,6 +1516,71 @@ fn build_tray_menu<R: Runtime>(
     Menu::with_items(app, &refs)
 }
 
+fn tray_counts(payload: &TrayMenuPayload) -> (usize, usize, usize) {
+    let total = payload.accounts.len();
+    let online = payload
+        .accounts
+        .iter()
+        .filter(|account| account.status == "active")
+        .count();
+    let abnormal = payload
+        .accounts
+        .iter()
+        .filter(|account| {
+            if account.status != "active" {
+                return true;
+            }
+            lowest_remaining(&account.windows).is_some_and(|value| value <= 0.0)
+        })
+        .count();
+    (total, online, abnormal)
+}
+
+fn tray_overall_remaining(payload: &TrayMenuPayload) -> Option<f64> {
+    let values: Vec<f64> = payload
+        .accounts
+        .iter()
+        .filter(|account| account.status == "active")
+        .filter_map(|account| lowest_remaining(&account.windows))
+        .collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
+fn apply_tray_title_and_tooltip<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: &TrayMenuPayload,
+) -> Result<(), PetError> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+    let (total, online, abnormal) = tray_counts(payload);
+    let overall = tray_overall_remaining(payload)
+        .map(|value| format!("{}%", value.round().clamp(0.0, 100.0) as i64))
+        .unwrap_or_else(|| "--%".into());
+    // Menu-bar text beside the pet icon (macOS): overall remaining quota.
+    let title = if total == 0 {
+        String::new()
+    } else {
+        overall.clone()
+    };
+    let tooltip = if payload.refreshing {
+        format!("Sub2API Pet · 同步中… · {online}/{total}")
+    } else if total == 0 {
+        "Sub2API Pet · 暂无账号".into()
+    } else {
+        format!("Sub2API Pet · {online}/{total} 在线 · {abnormal} 异常 · 额度 {overall}")
+    };
+    tray.set_title(Some(&title))
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    tray.set_tooltip(Some(&tooltip))
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    Ok(())
+}
+
 fn apply_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     payload: &TrayMenuPayload,
@@ -1479,12 +1590,96 @@ fn apply_tray_menu<R: Runtime>(
         tray.set_menu(Some(menu))
             .map_err(|error| PetError::Api(error.to_string()))?;
     }
+    apply_tray_title_and_tooltip(app, payload)?;
+    // Push live data to the account-panel window if it is open.
+    if let Some(window) = app.get_webview_window(ACCOUNT_PANEL_LABEL) {
+        let _ = window.emit("tray-data", payload);
+    }
     Ok(())
 }
 
 #[tauri::command]
-fn update_tray_menu(app: tauri::AppHandle, payload: TrayMenuPayload) -> Result<(), PetError> {
+fn update_tray_menu(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, TrayUiState>,
+    payload: TrayMenuPayload,
+) -> Result<(), PetError> {
+    if let Ok(mut guard) = state.payload.lock() {
+        *guard = payload.clone();
+    }
     apply_tray_menu(&app, &payload)
+}
+
+#[tauri::command]
+fn get_tray_payload(state: tauri::State<'_, TrayUiState>) -> TrayMenuPayload {
+    state
+        .payload
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+fn center_popup_position<R: Runtime>(app: &AppHandle<R>, w: i32, h: i32) -> PhysicalPosition<i32> {
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|window| window.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        let area = monitor.work_area();
+        let x = area.position.x + (area.size.width as i32 - w).max(0) / 2;
+        let y = area.position.y + (area.size.height as i32 - h).max(0) / 2;
+        return PhysicalPosition::new(x, y);
+    }
+    PhysicalPosition::new(120, 80)
+}
+
+/// Normal OS window listing every account's quota. Reuses the window if already built.
+fn show_account_panel_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetError> {
+    let w = ACCOUNT_PANEL_WIDTH.round() as i32;
+    let h = ACCOUNT_PANEL_HEIGHT.round() as i32;
+    let position = center_popup_position(app, w, h);
+
+    if let Some(window) = app.get_webview_window(ACCOUNT_PANEL_LABEL) {
+        window
+            .show()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        window
+            .set_focus()
+            .map_err(|error| PetError::Api(error.to_string()))?;
+        let _ = window.emit("tray-panel-shown", ());
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        ACCOUNT_PANEL_LABEL,
+        WebviewUrl::App("panel.html".into()),
+    )
+    .title("AI 账号池")
+    .inner_size(ACCOUNT_PANEL_WIDTH, ACCOUNT_PANEL_HEIGHT)
+    .min_inner_size(ACCOUNT_PANEL_MIN_WIDTH, ACCOUNT_PANEL_MIN_HEIGHT)
+    .decorations(true)
+    .transparent(false)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .resizable(true)
+    .focused(true)
+    .visible(false)
+    .build()
+    .map_err(|error| PetError::Api(error.to_string()))?;
+
+    window
+        .set_position(Position::Physical(position))
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    window
+        .show()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn show_account_panel(app: AppHandle) -> Result<(), PetError> {
+    show_account_panel_window(&app)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1497,6 +1692,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ApiState { client })
+        .manage(TrayUiState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
@@ -1518,27 +1714,23 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let menu = build_tray_menu(
-                &app.handle(),
-                &TrayMenuPayload {
-                    accounts: Vec::new(),
-                    synced_at: None,
-                },
-            )?;
+            let empty = TrayMenuPayload::default();
+            let menu = build_tray_menu(&app.handle(), &empty)?;
             // Dedicated 64x64 tray art fills the menu-bar slot better than the window icon
-            // (less empty padding, higher subject contrast at 18–22pt).
+            // (less empty padding, higher subject contrast at 18–22pt). Unchanged pet art.
             let tray_icon = Image::from_bytes(include_bytes!("../icons/tray-icon-color.png"))
                 .expect("tray icon");
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 .tooltip("Sub2API Pet")
                 .menu(&menu)
+                // Native menu on both left and right click.
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
                     let id = event.id.as_ref();
                     match id {
-                        "pool" | "show" => {
-                            show_main_window(app);
+                        "pool" | "show" | "open-panel" => {
+                            let _ = show_account_panel_window(app);
                         }
                         "refresh" => {
                             show_main_window(app);
@@ -1555,12 +1747,13 @@ pub fn run() {
                         "quit" => app.exit(0),
                         "empty" => {}
                         other if other.starts_with("account-") => {
-                            show_main_window(app);
+                            let _ = show_account_panel_window(app);
                         }
                         _ => {}
                     }
                 })
                 .build(app)?;
+            let _ = apply_tray_title_and_tooltip(&app.handle(), &empty);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1594,6 +1787,8 @@ pub fn run() {
             logout,
             quit_app,
             update_tray_menu,
+            get_tray_payload,
+            show_account_panel,
             show_action_menu,
             hide_action_menu,
             show_settings_window,
