@@ -2,6 +2,8 @@ import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // Relative asset URLs load reliably in multi-page Tauri webviews (esp. Windows WebView2).
+  base: './',
   clearScreen: false,
   server: {
     host: '127.0.0.1',

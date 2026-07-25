@@ -47,6 +47,11 @@ button {
   --meter-card-blur: 12px;
 }
 
+/* Transparent always-on-top + backdrop-filter is very expensive on Windows WebView2. */
+html.is-windows .pet-shell {
+  --meter-card-blur: 0px;
+}
+
 .icon-button,
 .input-icon {
   display: inline-grid;

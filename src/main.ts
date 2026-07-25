@@ -113,6 +113,12 @@ interface AccountQuotaRow {
 const BAR_SEGMENTS = 5
 
 const isDesktop = '__TAURI_INTERNALS__' in window
+/** Windows WebView2 pays a steep cost for backdrop-filter on transparent always-on-top windows. */
+const isWindows =
+  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent || '')
+if (isWindows) {
+  document.documentElement.classList.add('is-windows')
+}
 const defaultShowModels: ModelVisibility = {
   claude: true,
   codex: true,
@@ -467,7 +473,11 @@ function applyCardOpacity(opacity: number = settings.cardOpacity): void {
   shell.style.setProperty('--meter-card-opacity', String(alpha))
   // Soften border / blur with the same knob so 0% truly disappears (no drop shadow).
   shell.style.setProperty('--meter-card-border', String(Math.min(0.45, alpha * 0.55)))
-  shell.style.setProperty('--meter-card-blur', `${Math.round(4 + alpha * 14)}px`)
+  // Skip backdrop blur on Windows — WebView2 transparent composition is too expensive.
+  shell.style.setProperty(
+    '--meter-card-blur',
+    isWindows ? '0px' : `${Math.round(4 + alpha * 14)}px`,
+  )
 }
 
 function normalizeShowModels(raw: unknown): ModelVisibility {
@@ -1423,6 +1433,7 @@ async function refreshQuota(force: boolean): Promise<void> {
   if (refreshing || !connected) return
   refreshing = true
   setMood('refreshing')
+  // Tooltip-only "syncing" indicator — backend skips full tray menu rebuild for this flag.
   void syncTrayMenu({ refreshing: true })
   if (force) showSpeechBubble(pickLine(['去查最新额度啦…', '稍等，我刷新一下', '正在同步账号池…']), 2200)
   quotaDock.classList.add('is-refreshing')
@@ -1457,6 +1468,7 @@ async function refreshQuota(force: boolean): Promise<void> {
   } finally {
     refreshing = false
     quotaDock.classList.remove('is-refreshing')
+    // Single menu rebuild after data lands (fingerprint skips no-op rebuilds).
     void syncTrayMenu({ refreshing: false })
   }
 }

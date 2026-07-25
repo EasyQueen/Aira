@@ -4,9 +4,42 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI 账号池</title>
+    <style>
+      /* Static shell painted before JS — avoids empty transparent/white panel on Windows. */
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #f4f6fa;
+        color: #1e304a;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      #app { width: 100%; height: 100%; }
+      .boot-panel {
+        box-sizing: border-box;
+        height: 100%;
+        padding: 20px 18px;
+        background: #f4f6fa;
+      }
+      .boot-panel h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        font-weight: 650;
+      }
+      .boot-panel p {
+        margin: 0;
+        color: #67758d;
+        font-size: 13px;
+      }
+    </style>
   </head>
-  <body>
-    <div id="app"></div>
+  <body class="is-account-panel">
+    <div id="app">
+      <div class="boot-panel" aria-busy="true">
+        <h1>AI 账号池</h1>
+        <p>正在加载账号额度…</p>
+      </div>
+    </div>
     <script type="module" src="/src/panel.ts"></script>
   </body>
 </html>

@@ -4,9 +4,50 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sub2API Pet 设置</title>
+    <style>
+      /* Static shell so Windows never flashes a blank WebView before JS hydrates. */
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #f7f9fc;
+        color: #1e304a;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      #app { width: 100%; height: 100%; }
+      .boot-shell {
+        box-sizing: border-box;
+        height: 100%;
+        padding: 28px 24px;
+        background: #fafcff;
+      }
+      .boot-shell .eyebrow {
+        display: block;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        color: #7a8ba8;
+        margin-bottom: 6px;
+      }
+      .boot-shell h1 {
+        margin: 0 0 16px;
+        font-size: 22px;
+        font-weight: 650;
+      }
+      .boot-shell p {
+        margin: 0;
+        color: #67758d;
+        font-size: 13px;
+      }
+    </style>
   </head>
   <body class="settings-window-body">
-    <div id="app"></div>
+    <div id="app">
+      <div class="boot-shell" aria-busy="true">
+        <span class="eyebrow">SUB2API PET</span>
+        <h1>账号池额度</h1>
+        <p>正在加载设置…</p>
+      </div>
+    </div>
     <script type="module" src="/src/settings.ts"></script>
   </body>
 </html>

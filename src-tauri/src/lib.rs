@@ -1,9 +1,10 @@
 use chrono::{DateTime, SecondsFormat, Utc};
+use futures::future::join_all;
 use reqwest::{Client, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::time::Duration;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -12,6 +13,9 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Position, Runtime, WebviewUrl,
 };
 use thiserror::Error;
+
+/// Max parallel quota fetches — avoids serial multi-second stalls on large pools.
+const QUOTA_FETCH_CONCURRENCY: usize = 6;
 
 const KEYRING_SERVICE: &str = "com.sub2api.pet";
 const KEYRING_USER: &str = "active-session";
@@ -1056,9 +1060,23 @@ async fn refresh_pool_quotas(
         ));
     }
 
+    // Fetch quotas with bounded concurrency so large pools don't block the UI
+    // for tens of seconds on Windows (WebView2 stays responsive while we wait).
     let mut rows = Vec::with_capacity(accounts.len());
-    for (account, item) in &accounts {
-        rows.push(quota_for_account(&state, account, Some(item), force).await);
+    for chunk in accounts.chunks(QUOTA_FETCH_CONCURRENCY) {
+        let futs: Vec<_> = chunk
+            .iter()
+            .map(|(account, item)| {
+                let client = state.client.clone();
+                let account = account.clone();
+                let item = item.clone();
+                async move {
+                    let local = ApiState { client };
+                    quota_for_account(&local, &account, Some(&item), force).await
+                }
+            })
+            .collect();
+        rows.extend(join_all(futs).await);
     }
     Ok(rows)
 }
@@ -1119,9 +1137,35 @@ struct TrayMenuPayload {
 }
 
 /// Caches the latest tray payload so the account-panel window can fetch it on open.
+/// `menu_fingerprint` avoids full native menu rebuilds when only the refreshing flag toggles.
 #[derive(Default)]
 struct TrayUiState {
     payload: Mutex<TrayMenuPayload>,
+    menu_fingerprint: Mutex<String>,
+}
+
+/// Fingerprint of tray *menu structure* (accounts + labels), ignoring `refreshing`.
+/// Rebuilding the Win32 tray menu while open makes clicks miss / lag — only rebuild when needed.
+fn tray_menu_fingerprint(payload: &TrayMenuPayload) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(256);
+    let _ = write!(out, "synced={:?}|", payload.synced_at);
+    for account in &payload.accounts {
+        let _ = write!(
+            out,
+            "{}:{}:{}:{}",
+            account.id, account.platform, account.status, account.name
+        );
+        for window in &account.windows {
+            let _ = write!(
+                out,
+                "[{}/{:?}/{:?}]",
+                window.label, window.remaining_percent, window.reset_at
+            );
+        }
+        out.push(';');
+    }
+    out
 }
 
 fn platform_display_name(platform: &str) -> &'static str {
@@ -1301,75 +1345,71 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Legacy label kept so any old secondary process can still be closed.
 const ACTION_MENU_LABEL: &str = "action-menu";
-const ACTION_MENU_WIDTH: f64 = 176.0;
-const ACTION_MENU_HEIGHT: f64 = 196.0;
 
-fn clamp_action_menu_position<R: Runtime>(
-    app: &AppHandle<R>,
-    x: i32,
-    y: i32,
-) -> PhysicalPosition<i32> {
-    let menu_w = ACTION_MENU_WIDTH.round() as i32;
-    let menu_h = ACTION_MENU_HEIGHT.round() as i32;
-    let mut pos = PhysicalPosition::new(x, y);
-
-    let monitor = app
-        .get_webview_window("main")
-        .and_then(|window| window.current_monitor().ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten());
-
-    if let Some(monitor) = monitor {
-        let area = monitor.work_area();
-        let min_x = area.position.x;
-        let min_y = area.position.y;
-        let max_x = area.position.x + area.size.width as i32 - menu_w;
-        let max_y = area.position.y + area.size.height as i32 - menu_h;
-        pos.x = pos.x.clamp(min_x, max_x.max(min_x));
-        pos.y = pos.y.clamp(min_y, max_y.max(min_y));
+fn handle_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    match id {
+        "pool" | "show" | "open-panel" => {
+            let _ = show_account_panel_window(app);
+        }
+        "refresh" => {
+            show_main_window(app);
+            let _ = app.emit("pet-menu-action", "refresh");
+        }
+        "open-admin" => {
+            show_main_window(app);
+            let _ = app.emit("open-admin", ());
+        }
+        "settings" => {
+            show_main_window(app);
+            let _ = app.emit("open-settings", ());
+        }
+        "quit" => app.exit(0),
+        "empty" => {}
+        other if other.starts_with("account-") => {
+            let _ = show_account_panel_window(app);
+        }
+        _ => {}
     }
-    pos
 }
 
-/// Lightweight floating panel (separate window) so the transparent pet stays tiny.
-/// Coordinates may arrive as floats from the webview cursor API — round to physical px.
+fn build_action_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, tauri::Error> {
+    let panel = MenuItem::with_id(app, "open-panel", "打开账号面板", true, None::<&str>)?;
+    let refresh = MenuItem::with_id(app, "refresh", "刷新额度", true, None::<&str>)?;
+    let admin = MenuItem::with_id(app, "open-admin", "打开网页管理", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    Menu::with_items(
+        app,
+        &[
+            &panel,
+            &refresh,
+            &admin,
+            &settings,
+            &sep,
+            &quit,
+        ],
+    )
+}
+
+/// Native context menu at the cursor — avoids a second transparent WebView (very slow / flaky on Windows).
 #[tauri::command]
 fn show_action_menu(app: AppHandle, x: f64, y: f64) -> Result<(), PetError> {
-    let position = clamp_action_menu_position(&app, x.round() as i32, y.round() as i32);
-
+    // Close any legacy transparent action-menu window from older builds.
     if let Some(window) = app.get_webview_window(ACTION_MENU_LABEL) {
-        window
-            .set_position(Position::Physical(position))
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        window
-            .show()
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        window
-            .set_focus()
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        let _ = window.emit("action-menu-shown", ());
-        return Ok(());
+        let _ = window.close();
     }
 
-    let window =
-        WebviewWindowBuilder::new(&app, ACTION_MENU_LABEL, WebviewUrl::App("menu.html".into()))
-            .title("操作")
-            .inner_size(ACTION_MENU_WIDTH, ACTION_MENU_HEIGHT)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .focused(true)
-            .visible(false)
-            .build()
-            .map_err(|error| PetError::Api(error.to_string()))?;
+    let Some(window) = app.get_webview_window("main") else {
+        return Err(PetError::Api("主窗口不可用".into()));
+    };
 
+    let menu = build_action_menu(&app).map_err(|error| PetError::Api(error.to_string()))?;
+    let position = Position::Physical(PhysicalPosition::new(x.round() as i32, y.round() as i32));
     window
-        .set_position(Position::Physical(position))
-        .map_err(|error| PetError::Api(error.to_string()))?;
-    window
-        .show()
+        .popup_menu_at(&menu, position)
         .map_err(|error| PetError::Api(error.to_string()))?;
     Ok(())
 }
@@ -1377,9 +1417,7 @@ fn show_action_menu(app: AppHandle, x: f64, y: f64) -> Result<(), PetError> {
 #[tauri::command]
 fn hide_action_menu(app: AppHandle) -> Result<(), PetError> {
     if let Some(window) = app.get_webview_window(ACTION_MENU_LABEL) {
-        window
-            .hide()
-            .map_err(|error| PetError::Api(error.to_string()))?;
+        let _ = window.close();
     }
     Ok(())
 }
@@ -1388,39 +1426,45 @@ const SETTINGS_LABEL: &str = "settings";
 const SETTINGS_WIDTH: f64 = 380.0;
 const SETTINGS_HEIGHT: f64 = 640.0;
 
-/// Dedicated settings dialog so the transparent pet window stays visible and undocked.
-#[tauri::command]
-fn show_settings_window(app: AppHandle) -> Result<(), PetError> {
-    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
-        window
-            .show()
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        window
-            .set_focus()
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        let _ = window.center();
-        let _ = window.emit("settings-window-shown", ());
+fn ensure_settings_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetError> {
+    if app.get_webview_window(SETTINGS_LABEL).is_some() {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(
-        &app,
-        SETTINGS_LABEL,
-        WebviewUrl::App("settings.html".into()),
-    )
-    .title("Sub2API Pet 设置")
-    .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
-    .decorations(true)
-    .transparent(false)
-    .always_on_top(true)
-    .skip_taskbar(false)
-    .resizable(false)
-    .focused(true)
-    .center()
-    .build()
-    .map_err(|error| PetError::Api(error.to_string()))?;
+    WebviewWindowBuilder::new(app, SETTINGS_LABEL, WebviewUrl::App("settings.html".into()))
+        .title("Sub2API Pet 设置")
+        .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+        .decorations(true)
+        .transparent(false)
+        .always_on_top(true)
+        .skip_taskbar(false)
+        .resizable(false)
+        .focused(false)
+        .visible(false)
+        .center()
+        .build()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    Ok(())
+}
 
-    let _ = window.set_focus();
+/// Dedicated settings dialog so the transparent pet window stays visible and undocked.
+#[tauri::command]
+fn show_settings_window(app: AppHandle) -> Result<(), PetError> {
+    ensure_settings_window(&app)?;
+
+    let Some(window) = app.get_webview_window(SETTINGS_LABEL) else {
+        return Err(PetError::Api("设置窗口创建失败".into()));
+    };
+
+    window
+        .show()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    window
+        .set_focus()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    let _ = window.center();
+    // HTML ships a static skeleton so show() is never a blank frame; JS re-hydrates on this event.
+    let _ = window.emit("settings-window-shown", ());
     Ok(())
 }
 
@@ -1574,8 +1618,16 @@ fn apply_tray_title_and_tooltip<R: Runtime>(
     } else {
         format!("Sub2API Pet · {online}/{total} 在线 · {abnormal} 异常 · 额度 {overall}")
     };
-    tray.set_title(Some(&title))
-        .map_err(|error| PetError::Api(error.to_string()))?;
+    // Title text beside the tray icon is a macOS menu-bar affordance; skip on other platforms.
+    #[cfg(target_os = "macos")]
+    {
+        tray.set_title(Some(&title))
+            .map_err(|error| PetError::Api(error.to_string()))?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = title;
+    }
     tray.set_tooltip(Some(&tooltip))
         .map_err(|error| PetError::Api(error.to_string()))?;
     Ok(())
@@ -1583,13 +1635,36 @@ fn apply_tray_title_and_tooltip<R: Runtime>(
 
 fn apply_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
+    state: &TrayUiState,
     payload: &TrayMenuPayload,
 ) -> Result<(), PetError> {
-    let menu = build_tray_menu(app, payload).map_err(|error| PetError::Api(error.to_string()))?;
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        tray.set_menu(Some(menu))
-            .map_err(|error| PetError::Api(error.to_string()))?;
+    let fingerprint = tray_menu_fingerprint(payload);
+    let menu_changed = {
+        match state.menu_fingerprint.lock() {
+            Ok(mut last) => {
+                if *last != fingerprint {
+                    *last = fingerprint;
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => true,
+        }
+    };
+
+    // Only rebuild the native tray menu when account rows actually change.
+    // Toggling `refreshing` alone used to replace the whole menu twice per sync,
+    // which freezes Win32 tray menus and drops clicks mid-interaction.
+    if menu_changed {
+        let menu =
+            build_tray_menu(app, payload).map_err(|error| PetError::Api(error.to_string()))?;
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            tray.set_menu(Some(menu))
+                .map_err(|error| PetError::Api(error.to_string()))?;
+        }
     }
+
     apply_tray_title_and_tooltip(app, payload)?;
     // Push live data to the account-panel window if it is open.
     if let Some(window) = app.get_webview_window(ACCOUNT_PANEL_LABEL) {
@@ -1607,7 +1682,7 @@ fn update_tray_menu(
     if let Ok(mut guard) = state.payload.lock() {
         *guard = payload.clone();
     }
-    apply_tray_menu(&app, &payload)
+    apply_tray_menu(&app, state.inner(), &payload)
 }
 
 #[tauri::command]
@@ -1633,40 +1708,38 @@ fn center_popup_position<R: Runtime>(app: &AppHandle<R>, w: i32, h: i32) -> Phys
     PhysicalPosition::new(120, 80)
 }
 
+fn ensure_account_panel_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetError> {
+    if app.get_webview_window(ACCOUNT_PANEL_LABEL).is_some() {
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(app, ACCOUNT_PANEL_LABEL, WebviewUrl::App("panel.html".into()))
+        .title("AI 账号池")
+        .inner_size(ACCOUNT_PANEL_WIDTH, ACCOUNT_PANEL_HEIGHT)
+        .min_inner_size(ACCOUNT_PANEL_MIN_WIDTH, ACCOUNT_PANEL_MIN_HEIGHT)
+        .decorations(true)
+        .transparent(false)
+        .always_on_top(false)
+        .skip_taskbar(false)
+        .resizable(true)
+        .focused(false)
+        .visible(false)
+        .build()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    Ok(())
+}
+
 /// Normal OS window listing every account's quota. Reuses the window if already built.
 fn show_account_panel_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetError> {
+    ensure_account_panel_window(app)?;
+
     let w = ACCOUNT_PANEL_WIDTH.round() as i32;
     let h = ACCOUNT_PANEL_HEIGHT.round() as i32;
     let position = center_popup_position(app, w, h);
 
-    if let Some(window) = app.get_webview_window(ACCOUNT_PANEL_LABEL) {
-        window
-            .show()
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        window
-            .set_focus()
-            .map_err(|error| PetError::Api(error.to_string()))?;
-        let _ = window.emit("tray-panel-shown", ());
-        return Ok(());
-    }
-
-    let window = WebviewWindowBuilder::new(
-        app,
-        ACCOUNT_PANEL_LABEL,
-        WebviewUrl::App("panel.html".into()),
-    )
-    .title("AI 账号池")
-    .inner_size(ACCOUNT_PANEL_WIDTH, ACCOUNT_PANEL_HEIGHT)
-    .min_inner_size(ACCOUNT_PANEL_MIN_WIDTH, ACCOUNT_PANEL_MIN_HEIGHT)
-    .decorations(true)
-    .transparent(false)
-    .always_on_top(false)
-    .skip_taskbar(false)
-    .resizable(true)
-    .focused(true)
-    .visible(false)
-    .build()
-    .map_err(|error| PetError::Api(error.to_string()))?;
+    let Some(window) = app.get_webview_window(ACCOUNT_PANEL_LABEL) else {
+        return Err(PetError::Api("账号面板创建失败".into()));
+    };
 
     window
         .set_position(Position::Physical(position))
@@ -1674,6 +1747,18 @@ fn show_account_panel_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetEr
     window
         .show()
         .map_err(|error| PetError::Api(error.to_string()))?;
+    window
+        .set_focus()
+        .map_err(|error| PetError::Api(error.to_string()))?;
+    // Skeleton HTML is already painted; panel.ts reloads tray payload on this event.
+    let _ = window.emit("tray-panel-shown", ());
+
+    // Also push the latest cached payload so the panel is never empty after open.
+    if let Some(state) = app.try_state::<TrayUiState>() {
+        if let Ok(payload) = state.payload.lock() {
+            let _ = window.emit("tray-data", &*payload);
+        }
+    }
     Ok(())
 }
 
@@ -1710,6 +1795,10 @@ pub fn run() {
             }
         })
         .plugin(tauri_plugin_opener::init())
+        // Context menus (native pet right-click) share the same ids as the tray menu.
+        .on_menu_event(|app, event| {
+            handle_menu_action(app, event.id().as_ref());
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -1727,33 +1816,24 @@ pub fn run() {
                 // Native menu on both left and right click.
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
-                    let id = event.id.as_ref();
-                    match id {
-                        "pool" | "show" | "open-panel" => {
-                            let _ = show_account_panel_window(app);
-                        }
-                        "refresh" => {
-                            show_main_window(app);
-                            let _ = app.emit("pet-menu-action", "refresh");
-                        }
-                        "open-admin" => {
-                            show_main_window(app);
-                            let _ = app.emit("open-admin", ());
-                        }
-                        "settings" => {
-                            show_main_window(app);
-                            let _ = app.emit("open-settings", ());
-                        }
-                        "quit" => app.exit(0),
-                        "empty" => {}
-                        other if other.starts_with("account-") => {
-                            let _ = show_account_panel_window(app);
-                        }
-                        _ => {}
-                    }
+                    handle_menu_action(app, event.id.as_ref());
                 })
                 .build(app)?;
             let _ = apply_tray_title_and_tooltip(&app.handle(), &empty);
+
+            // Warm secondary WebViews at startup so the first open is not a cold blank frame
+            // (WebView2 on Windows is especially slow to create on demand).
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // Small delay so the pet window paints first.
+                std::thread::sleep(Duration::from_millis(400));
+                let h = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    let _ = ensure_settings_window(&h);
+                    let _ = ensure_account_panel_window(&h);
+                });
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1769,10 +1849,6 @@ pub fn run() {
                     } else {
                         let _ = window.hide();
                     }
-                }
-                // Dismiss the floating action panel when it loses focus (click outside).
-                tauri::WindowEvent::Focused(false) if window.label() == ACTION_MENU_LABEL => {
-                    let _ = window.hide();
                 }
                 _ => {}
             }

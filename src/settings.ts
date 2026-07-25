@@ -46,6 +46,9 @@ interface LoginResult {
 }
 
 const isDesktop = '__TAURI_INTERNALS__' in window
+if (typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent || '')) {
+  document.documentElement.classList.add('is-windows')
+}
 const defaultShowModels: ModelVisibility = { claude: true, codex: true, grok: true }
 const defaultSettings: PetSettings = {
   baseUrl: '',

@@ -33,6 +33,9 @@ interface TrayPayload {
 
 const isDesktop = '__TAURI_INTERNALS__' in window
 const win = isDesktop ? getCurrentWindow() : null
+if (typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent || '')) {
+  document.documentElement.classList.add('is-windows')
+}
 
 /** Same monochrome marks used by the pet meter chips. */
 const MODEL_ICON_PATHS: Record<ModelKey, string> = {
