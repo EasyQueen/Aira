@@ -1,6 +1,6 @@
 [package]
 name = "sub2api-pet"
-version = "0.1.0"
+version = "0.1.3"
 description = "Always-on-top Codex weekly quota companion for Sub2API"
 authors = ["Sub2API Pet"]
 edition = "2021"

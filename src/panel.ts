@@ -225,14 +225,19 @@ function renderPayload(payload: TrayPayload): void {
         lines.append(line)
       } else {
         for (const w of windows) {
-          const remaining = Math.max(0, Math.min(100, w.remaining_percent ?? 0))
-          const low = remaining <= 15
+          // 0% remaining still shows the track + "0%", with default empty colors (no red).
+          const remaining = Math.max(
+            0,
+            Math.min(100, Number.isFinite(w.remaining_percent as number) ? (w.remaining_percent as number) : 0),
+          )
+          const low = remaining > 0 && remaining <= 15
           const mk = modelKey(account.platform)
           const line = document.createElement('div')
           line.className = 'quota-line'
+          const fillClass = remaining <= 0 ? 'empty' : `${mk}${low ? ' low' : ''}`
           line.innerHTML = `
             <span class="quota-label">${windowLabel(w.label)}</span>
-            <div class="quota-track"><div class="quota-fill ${mk}${low ? ' low' : ''}" style="width:${remaining}%"></div></div>
+            <div class="quota-track"><div class="quota-fill ${fillClass}" style="width:${remaining}%"></div></div>
             <span class="quota-pct${low ? ' low' : ''}">${Math.round(remaining)}%</span>
           `
           lines.append(line)

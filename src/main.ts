@@ -188,8 +188,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         data-tauri-drag-region
         role="button"
         tabindex="0"
-        aria-label="单击互动，右键打开菜单，按住拖动"
-        title="单击互动 · 右键菜单 · 按住拖动"
+        aria-label="${isWindows ? '单击互动，按住拖动' : '单击互动，右键打开菜单，按住拖动'}"
+        title="${isWindows ? '单击互动 · 按住拖动' : '单击互动 · 右键菜单 · 按住拖动'}"
       >
         <div class="speech-bubble" id="speech-bubble" role="status" aria-live="polite">
           <p class="speech-text" id="speech-text"></p>
@@ -303,7 +303,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
               <input id="auto-start" type="checkbox" role="switch" />
             </label>
           </div>
-          <p class="pool-hint connected-only is-hidden">按勾选的模型展示账号额度。右键宠物可打开操作菜单（刷新 / 设置 / 管理）。</p>
+          <p class="pool-hint connected-only is-hidden">按勾选的模型展示账号额度。${isWindows ? '右键托盘图标可打开操作菜单（刷新 / 设置 / 管理）。' : '右键宠物可打开操作菜单（刷新 / 设置 / 管理）。'}</p>
 
           <footer class="settings-footer">
             <button class="text-button danger connected-only is-hidden" id="logout-button" type="button">
@@ -572,7 +572,16 @@ async function loadSettings(): Promise<void> {
     applyCardOpacity()
     return
   }
-  appStore = await load('settings.json', { autoSave: true })
+  if (!appStore) {
+    appStore = await load('settings.json', { autoSave: true })
+  } else {
+    // Settings window may have written to disk; refresh in-memory cache.
+    try {
+      await appStore.reload()
+    } catch {
+      // reload is best-effort; fall through to get()
+    }
+  }
   settings = normalizeSettings(await appStore.get<PetSettings>('connection'))
   settings.autoStart = await isEnabled().catch(() => settings.autoStart)
   applyCardOpacity()
@@ -583,7 +592,9 @@ async function saveSettings(): Promise<void> {
     localStorage.setItem('sub2api-pet-settings', JSON.stringify(settings))
     return
   }
-  await appStore?.set('connection', settings)
+  if (!appStore) appStore = await load('settings.json', { autoSave: true })
+  await appStore.set('connection', settings)
+  await appStore.save()
 }
 
 async function registerPositionPersistence(): Promise<void> {
@@ -879,14 +890,22 @@ const STREAK_LINES = [
   '好啦好啦，我知道你在',
 ]
 
-const TIP_LINES = [
-  '右键我可以打开操作菜单',
-  '菜单里可以刷新额度哦',
-  '把我拖到屏幕边缘会躲起来',
-  '右键托盘图标也能打开菜单',
-  '低额度时我会提醒你哦',
-  '单击我可以聊天互动',
-]
+const TIP_LINES = isWindows
+  ? [
+      '右键托盘图标可以打开操作菜单',
+      '托盘菜单里可以刷新额度哦',
+      '把我拖到屏幕边缘会躲起来',
+      '低额度时我会提醒你哦',
+      '单击我可以聊天互动',
+    ]
+  : [
+      '右键我可以打开操作菜单',
+      '菜单里可以刷新额度哦',
+      '把我拖到屏幕边缘会躲起来',
+      '右键托盘图标也能打开菜单',
+      '低额度时我会提醒你哦',
+      '单击我可以聊天互动',
+    ]
 
 function pickLine(lines: string[]): string {
   if (!lines.length) return ''
@@ -930,7 +949,7 @@ function contextualTapLine(): string | null {
     return pickLine([
       `有账号只剩 ${Math.round(lowest)}% 了…`,
       '额度告急，记得留意一下！',
-      '右键我，选刷新额度看看',
+      isWindows ? '托盘菜单里可以刷新额度哦' : '右键我，选刷新额度看看',
     ])
   }
   if (lowest != null && lowest <= 35 && Math.random() < 0.45) {
@@ -996,7 +1015,11 @@ function scheduleIdleChatter(): void {
     const lowest = lowestActiveRemaining()
     let line: string
     if (lowest != null && lowest <= 15) {
-      line = pickLine(['有账号额度偏低了…', '右键菜单可以刷新哦', '注意配额哦～'])
+      line = pickLine([
+        '有账号额度偏低了…',
+        isWindows ? '托盘菜单里可以刷新哦' : '右键菜单可以刷新哦',
+        '注意配额哦～',
+      ])
       setMood('alert')
       moodTimer = window.setTimeout(() => setMood(restingMood()), 1600)
     } else {
@@ -1258,9 +1281,13 @@ function platformIconSvg(platform?: string): string {
 }
 
 function createMeterColumn(window: QuotaWindow, tone: string, accountName: string): HTMLElement {
-  const remaining = Math.max(0, Math.min(100, window.remaining_percent))
+  // Keep 0% remaining visible as a normal empty bar (no special color).
+  const remaining = Number.isFinite(window.remaining_percent)
+    ? Math.max(0, Math.min(100, window.remaining_percent))
+    : 0
   const filled = Math.round((remaining / 100) * BAR_SEGMENTS)
-  const isLow = remaining <= 15
+  // Low/warning styling is for 1–15%; 0% keeps the default empty-track colors.
+  const isLow = remaining > 0 && remaining <= 15
 
   const col = document.createElement('div')
   col.className = `meter-col tone-${tone}${isLow ? ' is-low' : ''}`
@@ -1591,8 +1618,13 @@ async function onSettingsChanged(kind: string, payload?: unknown): Promise<void>
     return
   }
 
-  await loadSettings()
-  applyCardOpacity()
+  // Prefer payload from settings window (avoids store cache races across webviews).
+  if (payload && typeof payload === 'object') {
+    settings = normalizeSettings(payload as Partial<PetSettings>)
+    applyCardOpacity()
+  } else {
+    await loadSettings()
+  }
 
   if (kind === 'login') {
     connected = true
@@ -1617,7 +1649,13 @@ async function onSettingsChanged(kind: string, payload?: unknown): Promise<void>
 
   if (kind === 'save') {
     settingsOpen = false
-    if (isDesktop) await getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop)
+    if (isDesktop) {
+      try {
+        await getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop)
+      } catch {
+        // ignore
+      }
+    }
     renderPool()
     startAutoRefresh()
     await applyWindowSize()
@@ -1718,6 +1756,9 @@ let pressStartX = 0
 let pressStartY = 0
 
 async function openActionMenu(): Promise<void> {
+  // Native popup menus are flaky on Windows transparent always-on-top windows;
+  // use the tray menu instead.
+  if (isWindows) return
   if (!isDesktop) {
     // Browser preview: fall back to in-page settings affordance.
     showSpeechBubble('桌面版右键可打开独立菜单', 2200)
@@ -1809,13 +1850,17 @@ shell.addEventListener('mouseleave', () => {
 petButton.addEventListener('contextmenu', (event) => {
   event.preventDefault()
   event.stopPropagation()
-  void openActionMenu()
+  // Windows: swallow the event only (no popup). Tray menu remains available.
+  if (!isWindows) void openActionMenu()
 })
 petButton.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
     playReaction()
-  } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+  } else if (
+    !isWindows &&
+    (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
+  ) {
     event.preventDefault()
     void openActionMenu()
   }
@@ -1882,7 +1927,14 @@ async function initialize(): Promise<void> {
     await refreshQuota(false)
     await applyWindowSize()
     window.setTimeout(() => {
-      showSpeechBubble(pickLine(['我在这里盯着额度哦', '点我可以互动～', '右键打开菜单哦']), 3000)
+      showSpeechBubble(
+        pickLine([
+          '我在这里盯着额度哦',
+          '点我可以互动～',
+          isWindows ? '托盘图标也能打开菜单哦' : '右键打开菜单哦',
+        ]),
+        3000,
+      )
       setMood('happy')
       moodTimer = window.setTimeout(() => setMood(restingMood()), 1400)
     }, 600)

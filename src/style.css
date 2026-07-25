@@ -513,7 +513,8 @@ html.is-windows .pet-shell {
   width: 100%;
   height: 3px;
   border-radius: 1.5px;
-  background: rgba(210, 216, 228, 0.55);
+  /* Opaque track — alpha colors vanish on Windows transparent WebView2. */
+  background: #d5dbe5;
   transition: background 280ms ease, transform 280ms ease;
 }
 

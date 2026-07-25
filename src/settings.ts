@@ -46,7 +46,9 @@ interface LoginResult {
 }
 
 const isDesktop = '__TAURI_INTERNALS__' in window
-if (typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent || '')) {
+const isWindows =
+  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent || '')
+if (isWindows) {
   document.documentElement.classList.add('is-windows')
 }
 const defaultShowModels: ModelVisibility = { claude: true, codex: true, grok: true }
@@ -166,7 +168,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
               <input id="auto-start" type="checkbox" role="switch" />
             </label>
           </div>
-          <p class="pool-hint connected-only is-hidden">按勾选的模型展示账号额度。右键宠物可打开操作菜单（刷新 / 设置 / 管理）。</p>
+          <p class="pool-hint connected-only is-hidden">按勾选的模型展示账号额度。${isWindows ? '右键托盘图标可打开操作菜单（刷新 / 设置 / 管理）。' : '右键宠物可打开操作菜单（刷新 / 设置 / 管理）。'}</p>
 
           <footer class="settings-footer">
             <button class="text-button danger connected-only is-hidden" id="logout-button" type="button">
@@ -184,7 +186,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <div class="settings-actions">
           <p class="form-error" id="form-error"></p>
           <button class="primary-button login-only" id="connect-button" type="submit">连接平台</button>
-          <button class="primary-button connected-only is-hidden" id="save-button" type="submit">保存设置</button>
+          <button class="primary-button connected-only is-hidden" id="save-button" type="button">保存设置</button>
         </div>
       </form>
     </section>
@@ -217,6 +219,7 @@ const maxDisplayAccountsInput = el<HTMLSelectElement>('#max-display-accounts')
 const refreshIntervalInput = el<HTMLSelectElement>('#refresh-interval')
 const formError = el<HTMLElement>('#form-error')
 const connectButton = el<HTMLButtonElement>('#connect-button')
+const saveButton = el<HTMLButtonElement>('#save-button')
 const refreshHint = el<HTMLElement>('#refresh-hint')
 const checkUpdateButton = el<HTMLButtonElement>('#check-update-button')
 const updateLabel = el<HTMLElement>('#update-label')
@@ -295,7 +298,13 @@ async function notifyMain(kind: 'save' | 'login' | 'logout' | 'preview-opacity',
   try {
     await emitTo('main', 'settings-changed', { kind, payload })
   } catch {
-    // main may not be listening yet
+    // Fallback: broadcast app-wide if targeted emit fails (window label / race).
+    try {
+      const { emit } = await import('@tauri-apps/api/event')
+      await emit('settings-changed', { kind, payload })
+    } catch {
+      // main may not be listening yet
+    }
   }
 }
 
@@ -305,9 +314,16 @@ async function loadSettings(): Promise<void> {
     settings = normalizeSettings(raw ? JSON.parse(raw) : null)
     return
   }
-  appStore = await load('settings.json', { autoSave: true })
-  settings = normalizeSettings(await appStore.get<PetSettings>('connection'))
+  const store = await ensureStore()
+  settings = normalizeSettings(store ? await store.get<PetSettings>('connection') : null)
   settings.autoStart = await isEnabled().catch(() => settings.autoStart)
+}
+
+async function ensureStore(): Promise<Store | null> {
+  if (!isDesktop) return null
+  if (appStore) return appStore
+  appStore = await load('settings.json', { autoSave: true })
+  return appStore
 }
 
 async function saveSettings(): Promise<void> {
@@ -315,7 +331,11 @@ async function saveSettings(): Promise<void> {
     localStorage.setItem('sub2api-pet-settings', JSON.stringify(settings))
     return
   }
-  await appStore?.set('connection', settings)
+  const store = await ensureStore()
+  if (!store) throw new Error('设置存储不可用')
+  await store.set('connection', settings)
+  // autoSave is on, but flush explicitly so the main window reload sees fresh data.
+  await store.save()
 }
 
 function fillForm(): void {
@@ -404,21 +424,62 @@ async function saveConnectedSettings(): Promise<void> {
     formError.textContent = '请至少勾选一个展示模型'
     return
   }
-  settings.alwaysOnTop = alwaysOnTopInput.checked
-  settings.autoStart = autoStartInput.checked
-  settings.showModels = showModels
-  settings.cardOpacity = clampCardOpacity(Number(cardOpacityInput.value) / 100)
-  settings.maxDisplayAccounts = clampDisplayAccounts(maxDisplayAccountsInput.value)
-  settings.refreshIntervalSec = clampRefreshInterval(refreshIntervalInput.value)
-  if (isDesktop) {
-    // Apply always-on-top on the pet (main) via event; also set main from main listener.
-    if (settings.autoStart) await enable()
-    else await disable()
+
+  formError.textContent = ''
+  saveButton.disabled = true
+  const previousLabel = saveButton.textContent
+  saveButton.textContent = '保存中…'
+
+  try {
+    // Keep connection identity in sync when the user edits them while logged in.
+    const baseUrl = baseUrlInput.value.trim().replace(/\/+$/, '')
+    const email = emailInput.value.trim()
+    if (baseUrl) settings.baseUrl = baseUrl
+    if (email) settings.email = email
+
+    settings.alwaysOnTop = alwaysOnTopInput.checked
+    settings.autoStart = autoStartInput.checked
+    settings.showModels = showModels
+    settings.cardOpacity = clampCardOpacity(Number(cardOpacityInput.value) / 100)
+    settings.maxDisplayAccounts = clampDisplayAccounts(maxDisplayAccountsInput.value)
+    settings.refreshIntervalSec = clampRefreshInterval(refreshIntervalInput.value)
+
+    if (isDesktop) {
+      // Autostart can fail on some Windows setups — never block saving the rest.
+      try {
+        if (settings.autoStart) await enable()
+        else await disable()
+      } catch (error) {
+        console.warn('autostart toggle failed', error)
+      }
+    }
+
+    await saveSettings()
+    refreshHint.textContent = refreshHintText()
+    // Pass the full settings object so main does not depend on store cache reload.
+    await notifyMain('save', { ...settings, showModels: { ...settings.showModels } })
+
+    if (isDesktop) {
+      try {
+        await invoke('hide_settings_window')
+      } catch {
+        // If hide fails, still show success so the user knows save worked.
+        formError.textContent = ''
+        saveButton.textContent = '已保存'
+        window.setTimeout(() => {
+          saveButton.textContent = previousLabel || '保存设置'
+        }, 1200)
+      }
+    }
+  } catch (error) {
+    formError.textContent = errorMessage(error)
+    saveButton.textContent = previousLabel || '保存设置'
+  } finally {
+    saveButton.disabled = false
+    if (saveButton.textContent === '保存中…') {
+      saveButton.textContent = previousLabel || '保存设置'
+    }
   }
-  await saveSettings()
-  refreshHint.textContent = refreshHintText()
-  await notifyMain('save')
-  if (isDesktop) await invoke('hide_settings_window')
 }
 
 async function checkForUpdate(manual = false): Promise<void> {
@@ -444,8 +505,21 @@ populateSelects()
 
 connectionForm.addEventListener('submit', (event) => {
   event.preventDefault()
-  if (connected) void saveConnectedSettings()
-  else void connect()
+  // Connected save uses a type=button control; form submit is only for login.
+  if (connected) {
+    void saveConnectedSettings()
+    return
+  }
+  void connect()
+})
+
+// Direct click path — avoids HTML5 constraint validation swallowing the action
+// (WebView2 often hides the native validation bubble, so it looks like a no-op).
+saveButton.addEventListener('click', (event) => {
+  event.preventDefault()
+  event.stopPropagation()
+  if (!connected || saveButton.disabled) return
+  void saveConnectedSettings()
 })
 
 cardOpacityInput.addEventListener('input', () => {

@@ -647,15 +647,37 @@ fn usage_window_reset_at(window: &Value) -> Option<String> {
         .and_then(|seconds| iso_from_epoch(Utc::now().timestamp() + seconds.max(0)))
 }
 
+fn json_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|n| n as f64))
+        .or_else(|| value.as_u64().map(|n| n as f64))
+        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))
+}
+
+fn json_field_f64(value: &Value, key: &str) -> Option<f64> {
+    value.get(key).and_then(json_f64)
+}
+
+/// Parse a Claude-style usage window. Keep fully-used (0% remaining) windows —
+/// they must still appear as empty bars instead of vanishing from the panel.
 fn parse_usage_window(value: &Value, label: &str) -> Option<QuotaWindow> {
     if value.is_null() || !value.is_object() {
         return None;
     }
-    let utilization = value.get("utilization").and_then(Value::as_f64)?;
-    let used = utilization.max(0.0);
+    // Prefer utilization / used_percent; fall back to remaining so a depleted
+    // window with only remaining=0 still renders.
+    let used = json_field_f64(value, "utilization")
+        .or_else(|| json_field_f64(value, "used_percent"))
+        .or_else(|| {
+            json_field_f64(value, "remaining_percent")
+                .or_else(|| json_field_f64(value, "remaining"))
+                .map(|remaining| (100.0 - remaining).max(0.0))
+        })?;
+    let used = used.max(0.0).min(100.0);
     Some(QuotaWindow {
         label: label.to_string(),
-        used_percent: used.min(100.0),
+        used_percent: used,
         remaining_percent: (100.0 - used).max(0.0),
         reset_at: usage_window_reset_at(value),
     })
@@ -2036,5 +2058,48 @@ mod tests {
         assert_eq!(snapshot.remaining_percent, 45.0);
         assert_eq!(snapshot.window_label.as_deref(), Some("5h"));
         assert_eq!(snapshot.source, "active");
+    }
+
+    #[test]
+    fn claude_usage_keeps_fully_depleted_windows() {
+        let usage = json!({
+            "updated_at": "2026-07-22T10:00:00Z",
+            "five_hour": {
+                "utilization": 100.0,
+                "resets_at": "2026-07-22T14:00:00Z",
+                "remaining_seconds": 1200
+            },
+            "seven_day": {
+                "utilization": "100",
+                "resets_at": "2026-07-28T08:00:00Z"
+            }
+        });
+
+        let account = PoolAccount {
+            id: 5,
+            name: "Claude Depleted".into(),
+            status: "active".into(),
+            plan: Some("max".into()),
+            platform: "anthropic".into(),
+            account_type: "oauth".into(),
+        };
+        let row = usage_to_row(&account, &usage, "cached");
+        assert_eq!(row.windows.len(), 2);
+        assert_eq!(row.windows[0].label, "5h");
+        assert_eq!(row.windows[0].remaining_percent, 0.0);
+        assert_eq!(row.windows[1].label, "7d");
+        assert_eq!(row.windows[1].remaining_percent, 0.0);
+        assert_eq!(row.remaining_percent, Some(0.0));
+    }
+
+    #[test]
+    fn claude_usage_accepts_remaining_percent_zero() {
+        let window = parse_usage_window(
+            &json!({ "remaining_percent": 0, "resets_at": "2026-07-22T14:00:00Z" }),
+            "5h",
+        )
+        .unwrap();
+        assert_eq!(window.used_percent, 100.0);
+        assert_eq!(window.remaining_percent, 0.0);
     }
 }
