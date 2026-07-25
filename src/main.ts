@@ -3,7 +3,7 @@ import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
 import { listen } from '@tauri-apps/api/event'
-import { cursorPosition, currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
+import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { load, type Store } from '@tauri-apps/plugin-store'
@@ -1944,12 +1944,10 @@ async function openActionMenu(): Promise<void> {
   }
   hideSpeechBubble()
   try {
-    const pos = await cursorPosition()
-    // cursorPosition returns floats; Rust expects rounded physical pixels.
-    await invoke('show_action_menu', {
-      x: Math.round(pos.x),
-      y: Math.round(pos.y),
-    })
+    // Backend pops the native menu at the OS cursor (window-relative).
+    // Do not pass screen `cursorPosition` into popup_menu_at — that API is
+    // relative to the window origin, which used to pin the menu far below the pet.
+    await invoke('show_action_menu')
   } catch (error) {
     showToast(errorMessage(error), 'error')
   }

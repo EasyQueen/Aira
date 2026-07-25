@@ -1417,8 +1417,13 @@ fn build_action_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, tauri::E
 }
 
 /// Native context menu at the cursor — avoids a second transparent WebView (very slow / flaky on Windows).
+///
+/// Uses `popup_menu` (cursor position) rather than `popup_menu_at` with screen coords.
+/// `popup_menu_at` expects coordinates **relative to the window's top-left**, so passing
+/// absolute screen pixels (from JS `cursorPosition`) made the menu appear far below the pet
+/// on macOS (and any display where the window is not at origin).
 #[tauri::command]
-fn show_action_menu(app: AppHandle, x: f64, y: f64) -> Result<(), PetError> {
+fn show_action_menu(app: AppHandle) -> Result<(), PetError> {
     // Close any legacy transparent action-menu window from older builds.
     if let Some(window) = app.get_webview_window(ACTION_MENU_LABEL) {
         let _ = window.close();
@@ -1429,9 +1434,9 @@ fn show_action_menu(app: AppHandle, x: f64, y: f64) -> Result<(), PetError> {
     };
 
     let menu = build_action_menu(&app).map_err(|error| PetError::Api(error.to_string()))?;
-    let position = Position::Physical(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    // Native path: resolve cursor on the OS side so position matches the pet under the pointer.
     window
-        .popup_menu_at(&menu, position)
+        .popup_menu(&menu)
         .map_err(|error| PetError::Api(error.to_string()))?;
     Ok(())
 }
