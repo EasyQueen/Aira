@@ -2,13 +2,13 @@
  * Independent settings window — keeps the pet window visible and untouched.
  */
 import './settings.css'
+import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { emitTo } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { load, type Store } from '@tauri-apps/plugin-store'
-import { check, type Update } from '@tauri-apps/plugin-updater'
 import {
   createIcons,
   Download,
@@ -16,6 +16,7 @@ import {
   EyeOff,
   ExternalLink,
   LogOut,
+  RefreshCw,
 } from 'lucide'
 
 type ModelKey = 'claude' | 'codex' | 'grok'
@@ -78,7 +79,59 @@ let settings = { ...defaultSettings, showModels: { ...defaultShowModels } }
 let appStore: Store | null = null
 let connected = false
 let tempToken = ''
-let pendingUpdate: Update | null = null
+
+interface AppUpdateInfo {
+  available: boolean
+  current_version: string
+  latest_version?: string | null
+  html_url?: string | null
+  download_url?: string | null
+  notes?: string | null
+}
+
+let currentAppVersion = ''
+let pendingUpdate: AppUpdateInfo | null = null
+
+function formatVersion(raw?: string | null): string {
+  if (!raw) return '—'
+  return `v${raw.replace(/^v/i, '')}`
+}
+
+function setUpdateUi(state: {
+  status: string
+  button?: string
+  available?: boolean
+  latest?: string | null
+}): void {
+  updateStatus.textContent = state.status
+  updateStatus.classList.toggle('has-update', Boolean(state.available))
+  if (state.button) updateLabel.textContent = state.button
+  if (state.available && state.latest) {
+    downloadUpdateButton.classList.remove('is-hidden')
+    downloadLabel.textContent = `立即更新 ${formatVersion(state.latest)}`
+  } else {
+    downloadUpdateButton.classList.add('is-hidden')
+  }
+  paintIcons()
+}
+
+async function loadAppVersion(): Promise<void> {
+  try {
+    currentAppVersion = isDesktop ? await getVersion() : '0.0.0-web'
+  } catch {
+    currentAppVersion = ''
+  }
+  appVersionLabel.textContent = currentAppVersion ? formatVersion(currentAppVersion) : '—'
+  if (!pendingUpdate?.available) {
+    setUpdateUi({
+      status: currentAppVersion
+        ? `当前 ${formatVersion(currentAppVersion)} · 点击下方检查更新`
+        : '点击下方检查更新',
+      button: '检查更新',
+      available: false,
+    })
+  }
+}
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main class="settings-window-shell">
@@ -170,15 +223,36 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           </div>
           <p class="pool-hint connected-only is-hidden">按勾选的模型展示账号额度。${isWindows ? '右键托盘图标可打开操作菜单（刷新 / 设置 / 管理）。' : '右键宠物可打开操作菜单（刷新 / 设置 / 管理）。'}</p>
 
+          <section class="about-card" aria-label="关于与更新">
+            <div class="about-head">
+              <div class="about-title">
+                <span class="about-eyebrow">关于应用</span>
+                <strong>Sub2API Pet</strong>
+              </div>
+              <div class="about-version" title="当前安装版本">
+                <span class="about-version-label">当前版本</span>
+                <span class="about-version-value" id="app-version">—</span>
+              </div>
+            </div>
+            <p class="about-status" id="update-status">启动后可检查 GitHub 最新版本</p>
+            <div class="about-actions">
+              <button class="text-button about-update-btn" id="check-update-button" type="button" title="检查并下载更新">
+                <i data-lucide="refresh-cw" id="update-icon"></i>
+                <span id="update-label">检查更新</span>
+              </button>
+              <button class="text-button about-download-btn is-hidden" id="download-update-button" type="button" title="打开安装包下载">
+                <i data-lucide="download"></i>
+                <span id="download-label">立即更新</span>
+              </button>
+            </div>
+          </section>
+
           <footer class="settings-footer">
             <button class="text-button danger connected-only is-hidden" id="logout-button" type="button">
               <i data-lucide="log-out"></i><span>退出登录</span>
             </button>
             <div class="footer-actions">
               <span class="connected-only is-hidden" id="refresh-hint">自动同步</span>
-              <button class="text-button" id="check-update-button" type="button" title="检查应用更新">
-                <i data-lucide="download"></i><span id="update-label">检查更新</span>
-              </button>
             </div>
           </footer>
         </div>
@@ -195,7 +269,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 
 function paintIcons(): void {
   createIcons({
-    icons: { Eye, EyeOff, Download, ExternalLink, LogOut },
+    icons: { Eye, EyeOff, Download, ExternalLink, LogOut, RefreshCw },
     attrs: { 'stroke-width': 2 },
   })
 }
@@ -222,7 +296,11 @@ const connectButton = el<HTMLButtonElement>('#connect-button')
 const saveButton = el<HTMLButtonElement>('#save-button')
 const refreshHint = el<HTMLElement>('#refresh-hint')
 const checkUpdateButton = el<HTMLButtonElement>('#check-update-button')
+const downloadUpdateButton = el<HTMLButtonElement>('#download-update-button')
 const updateLabel = el<HTMLElement>('#update-label')
+const downloadLabel = el<HTMLElement>('#download-label')
+const updateStatus = el<HTMLElement>('#update-status')
+const appVersionLabel = el<HTMLElement>('#app-version')
 
 function errorMessage(error: unknown): string {
   if (typeof error === 'string') return error
@@ -482,22 +560,77 @@ async function saveConnectedSettings(): Promise<void> {
   }
 }
 
+async function openUpdateDownload(info: AppUpdateInfo): Promise<void> {
+  const url = info.download_url || info.html_url
+  if (!url) {
+    setUpdateUi({
+      status: '未找到下载地址，请前往 GitHub Releases',
+      button: '检查更新',
+      available: true,
+      latest: info.latest_version,
+    })
+    return
+  }
+  if (isDesktop) await openUrl(url)
+  else window.open(url, '_blank', 'noopener')
+  setUpdateUi({
+    status: `已打开 ${formatVersion(info.latest_version)} 下载页，安装后重启应用`,
+    button: '检查更新',
+    available: true,
+    latest: info.latest_version,
+  })
+}
+
 async function checkForUpdate(manual = false): Promise<void> {
-  if (!isDesktop) return
+  if (!isDesktop) {
+    setUpdateUi({ status: '浏览器预览不支持检查更新', button: '检查更新' })
+    return
+  }
   checkUpdateButton.disabled = true
-  updateLabel.textContent = '检查中…'
+  downloadUpdateButton.disabled = true
+  setUpdateUi({
+    status: '正在检查 GitHub 最新版本…',
+    button: '检查中…',
+    available: Boolean(pendingUpdate?.available),
+    latest: pendingUpdate?.latest_version,
+  })
   try {
-    const update = await check()
-    pendingUpdate = update
-    if (!update) {
-      updateLabel.textContent = manual ? '已是最新' : '检查更新'
-      return
+    const info = await invoke<AppUpdateInfo>('check_app_update')
+    currentAppVersion = info.current_version || currentAppVersion
+    appVersionLabel.textContent = formatVersion(currentAppVersion)
+    if (info.available && info.latest_version) {
+      pendingUpdate = info
+      setUpdateUi({
+        status: `发现新版本 ${formatVersion(info.latest_version)}（当前 ${formatVersion(info.current_version)}）`,
+        button: '重新检查',
+        available: true,
+        latest: info.latest_version,
+      })
+      // Manual click on "检查更新" only checks; user confirms with "立即更新".
+      // If they already have an available update and click check again, keep download button.
+      if (manual && !downloadUpdateButton.classList.contains('is-hidden')) {
+        // no auto open — user uses 立即更新
+      }
+    } else {
+      pendingUpdate = null
+      setUpdateUi({
+        status: manual
+          ? `已是最新版本 ${formatVersion(info.current_version)}`
+          : `当前 ${formatVersion(info.current_version)} · 已是最新`,
+        button: '检查更新',
+        available: false,
+      })
     }
-    updateLabel.textContent = `更新 ${update.version}`
-  } catch {
-    updateLabel.textContent = manual ? '检查失败' : '检查更新'
+  } catch (error) {
+    setUpdateUi({
+      status: `检查失败：${errorMessage(error)}`,
+      button: '检查更新',
+      available: Boolean(pendingUpdate?.available),
+      latest: pendingUpdate?.latest_version,
+    })
   } finally {
     checkUpdateButton.disabled = false
+    downloadUpdateButton.disabled = false
   }
 }
 
@@ -553,6 +686,10 @@ el('#logout-button').addEventListener('click', async () => {
 })
 
 checkUpdateButton.addEventListener('click', () => void checkForUpdate(true))
+downloadUpdateButton.addEventListener('click', () => {
+  if (pendingUpdate?.available) void openUpdateDownload(pendingUpdate)
+  else void checkForUpdate(true)
+})
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && isDesktop) void invoke('hide_settings_window')
@@ -560,14 +697,19 @@ document.addEventListener('keydown', (event) => {
 
 async function initialize(): Promise<void> {
   await loadSettings()
+  await loadAppVersion()
   connected = isDesktop ? await invoke<boolean>('has_session') : true
   fillForm()
+  // Quiet background check so the card shows "发现新版本" when opened.
+  if (isDesktop) window.setTimeout(() => void checkForUpdate(false), 600)
   // Refresh form when the window is re-shown (reuse instance).
   if (isDesktop) {
     void getCurrentWindow().listen('settings-window-shown', async () => {
       await loadSettings()
+      await loadAppVersion()
       connected = await invoke<boolean>('has_session')
       fillForm()
+      void checkForUpdate(false)
     })
   }
 }

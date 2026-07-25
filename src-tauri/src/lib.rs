@@ -1501,6 +1501,134 @@ fn hide_settings_window(app: AppHandle) -> Result<(), PetError> {
     Ok(())
 }
 
+const GITHUB_LATEST_RELEASE: &str =
+    "https://api.github.com/repos/boycott96/sub2api-token/releases/latest";
+
+#[derive(Debug, Serialize)]
+struct AppUpdateInfo {
+    available: bool,
+    current_version: String,
+    latest_version: Option<String>,
+    html_url: Option<String>,
+    download_url: Option<String>,
+    notes: Option<String>,
+}
+
+fn parse_semver(raw: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = raw.trim().trim_start_matches('v').trim_start_matches('V');
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    // Allow trailing pre-release suffix on patch: "4-beta" → 4
+    let patch_raw = parts.next().unwrap_or("0");
+    let patch = patch_raw
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    Some((major, minor, patch))
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    match (parse_semver(latest), parse_semver(current)) {
+        (Some(l), Some(c)) => l > c,
+        _ => {
+            let l = latest.trim().trim_start_matches(['v', 'V']);
+            let c = current.trim().trim_start_matches(['v', 'V']);
+            !l.is_empty() && l != c
+        }
+    }
+}
+
+fn pick_release_asset(assets: &[Value]) -> Option<String> {
+    let urls: Vec<(&str, &str)> = assets
+        .iter()
+        .filter_map(|asset| {
+            let name = asset.get("name").and_then(Value::as_str)?;
+            let url = asset
+                .get("browser_download_url")
+                .and_then(Value::as_str)?;
+            Some((name, url))
+        })
+        .collect();
+
+    // Prefer installers for the current OS.
+    #[cfg(target_os = "windows")]
+    let prefs: &[&str] = &["-setup.exe", ".msi", ".exe"];
+    #[cfg(target_os = "macos")]
+    let prefs: &[&str] = &[".dmg", ".app.tar.gz", ".zip"];
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let prefs: &[&str] = &[".AppImage", ".deb", ".rpm"];
+
+    for suffix in prefs {
+        if let Some((_, url)) = urls
+            .iter()
+            .find(|(name, _)| name.ends_with(suffix) && !name.contains("latest.json"))
+        {
+            return Some((*url).to_string());
+        }
+    }
+    urls.first().map(|(_, url)| (*url).to_string())
+}
+
+/// Check GitHub Releases for a newer app version (no signed updater required).
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Result<AppUpdateInfo, PetError> {
+    let current_version = app.package_info().version.to_string();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent(format!("Sub2API-Pet/{}", current_version))
+        .build()?;
+
+    let response = client.get(GITHUB_LATEST_RELEASE).send().await?;
+    if !response.status().is_success() {
+        return Err(PetError::Api(format!(
+            "检查更新失败（HTTP {}）",
+            response.status()
+        )));
+    }
+
+    let release: Value = response.json().await.map_err(|_| PetError::InvalidResponse)?;
+    let tag = release
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let latest_version = tag.trim().trim_start_matches(['v', 'V']).to_string();
+    if latest_version.is_empty() {
+        return Err(PetError::Api("未找到最新版本信息".into()));
+    }
+
+    let available = is_newer_version(&latest_version, &current_version);
+    let html_url = release
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let notes = release
+        .get("body")
+        .and_then(Value::as_str)
+        .map(|body| body.chars().take(400).collect::<String>());
+    let assets = release
+        .get("assets")
+        .and_then(Value::as_array)
+        .map(|items| items.as_slice())
+        .unwrap_or(&[]);
+    let download_url = if available {
+        pick_release_asset(assets).or_else(|| html_url.clone())
+    } else {
+        None
+    };
+
+    Ok(AppUpdateInfo {
+        available,
+        current_version,
+        latest_version: Some(latest_version),
+        html_url,
+        download_url,
+        notes,
+    })
+}
+
 fn build_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     payload: &TrayMenuPayload,
@@ -1890,7 +2018,8 @@ pub fn run() {
             show_action_menu,
             hide_action_menu,
             show_settings_window,
-            hide_settings_window
+            hide_settings_window,
+            check_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sub2API Pet");
@@ -2101,5 +2230,39 @@ mod tests {
         .unwrap();
         assert_eq!(window.used_percent, 100.0);
         assert_eq!(window.remaining_percent, 0.0);
+    }
+
+    #[test]
+    fn version_compare_detects_newer_release() {
+        assert!(is_newer_version("0.1.5", "0.1.4"));
+        assert!(is_newer_version("v0.2.0", "0.1.9"));
+        assert!(!is_newer_version("0.1.4", "0.1.4"));
+        assert!(!is_newer_version("0.1.3", "0.1.4"));
+        assert!(is_newer_version("1.0.0", "0.9.9"));
+    }
+
+    #[test]
+    fn pick_release_asset_prefers_platform_installer() {
+        let assets = vec![
+            json!({
+                "name": "Sub2API.Pet_0.1.5_amd64.AppImage",
+                "browser_download_url": "https://example.com/appimage"
+            }),
+            json!({
+                "name": "Sub2API.Pet_0.1.5_x64-setup.exe",
+                "browser_download_url": "https://example.com/setup.exe"
+            }),
+            json!({
+                "name": "Sub2API.Pet_0.1.5_universal.dmg",
+                "browser_download_url": "https://example.com/app.dmg"
+            }),
+        ];
+        let picked = pick_release_asset(&assets).unwrap();
+        #[cfg(target_os = "windows")]
+        assert!(picked.ends_with("setup.exe"));
+        #[cfg(target_os = "macos")]
+        assert!(picked.ends_with(".dmg"));
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        assert!(picked.ends_with(".AppImage"));
     }
 }

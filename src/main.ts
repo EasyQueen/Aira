@@ -1,14 +1,12 @@
 import './style.css'
+import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
 import { listen } from '@tauri-apps/api/event'
 import { cursorPosition, currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
-import { confirm } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { relaunch } from '@tauri-apps/plugin-process'
 import { load, type Store } from '@tauri-apps/plugin-store'
-import { check, type Update } from '@tauri-apps/plugin-updater'
 import {
   createIcons,
   Download,
@@ -185,13 +183,18 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div
         class="pet-hitbox"
         id="pet-button"
-        data-tauri-drag-region
         role="button"
         tabindex="0"
         aria-label="${isWindows ? '单击互动，按住拖动' : '单击互动，右键打开菜单，按住拖动'}"
         title="${isWindows ? '单击互动 · 按住拖动' : '单击互动 · 右键菜单 · 按住拖动'}"
       >
-        <div class="speech-bubble" id="speech-bubble" role="status" aria-live="polite">
+        <div
+          class="speech-bubble"
+          id="speech-bubble"
+          role="status"
+          aria-live="polite"
+          title=""
+        >
           <p class="speech-text" id="speech-text"></p>
         </div>
         <img class="pet-image" id="pet-image" src="${petDefault}" alt="Sub2API 桌面宠物" draggable="false" />
@@ -305,15 +308,36 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           </div>
           <p class="pool-hint connected-only is-hidden">按勾选的模型展示账号额度。${isWindows ? '右键托盘图标可打开操作菜单（刷新 / 设置 / 管理）。' : '右键宠物可打开操作菜单（刷新 / 设置 / 管理）。'}</p>
 
+          <section class="about-card" aria-label="关于与更新">
+            <div class="about-head">
+              <div class="about-title">
+                <span class="about-eyebrow">关于应用</span>
+                <strong>Sub2API Pet</strong>
+              </div>
+              <div class="about-version" title="当前安装版本">
+                <span class="about-version-label">当前版本</span>
+                <span class="about-version-value" id="app-version">—</span>
+              </div>
+            </div>
+            <p class="about-status" id="update-status">启动后可检查 GitHub 最新版本</p>
+            <div class="about-actions">
+              <button class="text-button about-update-btn" id="check-update-button" type="button" title="检查并下载更新">
+                <i data-lucide="refresh-cw"></i>
+                <span id="update-label">检查更新</span>
+              </button>
+              <button class="text-button about-download-btn is-hidden" id="download-update-button" type="button" title="打开安装包下载">
+                <i data-lucide="download"></i>
+                <span id="download-label">立即更新</span>
+              </button>
+            </div>
+          </section>
+
           <footer class="settings-footer">
             <button class="text-button danger connected-only is-hidden" id="logout-button" type="button">
               <i data-lucide="log-out"></i><span>退出登录</span>
             </button>
             <div class="footer-actions">
               <span class="connected-only is-hidden" id="refresh-hint">自动同步</span>
-              <button class="text-button" id="check-update-button" type="button" title="检查应用更新">
-                <i data-lucide="download"></i><span id="update-label">检查更新</span>
-              </button>
             </div>
           </footer>
         </div>
@@ -380,38 +404,139 @@ const refreshHint = element<HTMLElement>('#refresh-hint')
 const formError = element<HTMLElement>('#form-error')
 const connectButton = element<HTMLButtonElement>('#connect-button')
 const checkUpdateButton = element<HTMLButtonElement>('#check-update-button')
+const downloadUpdateButton = element<HTMLButtonElement>('#download-update-button')
 const updateLabel = element<HTMLElement>('#update-label')
+const downloadLabel = element<HTMLElement>('#download-label')
+const updateStatus = element<HTMLElement>('#update-status')
+const appVersionLabel = element<HTMLElement>('#app-version')
+
+interface AppUpdateInfo {
+  available: boolean
+  current_version: string
+  latest_version?: string | null
+  html_url?: string | null
+  download_url?: string | null
+  notes?: string | null
+}
 
 let checkingUpdate = false
+/** Pending GitHub release the pet bubble can open on click. */
+let pendingUpdateInfo: AppUpdateInfo | null = null
+let updateBubbleActive = false
+let updateCheckTimer: number | undefined
+let currentAppVersion = ''
 
-async function installUpdate(update: Update): Promise<void> {
-  const accepted = await confirm(
-    `发现新版本 v${update.version}，是否立即下载并安装？${update.body ? `\n\n${update.body}` : ''}`,
-    { title: 'Sub2API Pet 更新', kind: 'info', okLabel: '立即升级', cancelLabel: '稍后' },
-  )
-  if (!accepted) {
-    updateLabel.textContent = `可升级至 v${update.version}`
+function formatAppVersion(raw?: string | null): string {
+  if (!raw) return '—'
+  return `v${raw.replace(/^v/i, '')}`
+}
+
+function setSettingsUpdateUi(state: {
+  status: string
+  button?: string
+  available?: boolean
+  latest?: string | null
+}): void {
+  updateStatus.textContent = state.status
+  updateStatus.classList.toggle('has-update', Boolean(state.available))
+  if (state.button) updateLabel.textContent = state.button
+  if (state.available && state.latest) {
+    downloadUpdateButton.classList.remove('is-hidden')
+    downloadLabel.textContent = `立即更新 ${formatAppVersion(state.latest)}`
+  } else {
+    downloadUpdateButton.classList.add('is-hidden')
+  }
+  paintIcons()
+}
+
+async function loadAppVersion(): Promise<void> {
+  try {
+    currentAppVersion = isDesktop ? await getVersion() : '0.0.0-web'
+  } catch {
+    currentAppVersion = ''
+  }
+  appVersionLabel.textContent = currentAppVersion ? formatAppVersion(currentAppVersion) : '—'
+  if (!pendingUpdateInfo?.available) {
+    setSettingsUpdateUi({
+      status: currentAppVersion
+        ? `当前 ${formatAppVersion(currentAppVersion)} · 点击下方检查更新`
+        : '点击下方检查更新',
+      button: '检查更新',
+      available: false,
+    })
+  }
+}
+
+function clearUpdateBubbleState(): void {
+  updateBubbleActive = false
+  speechBubble.classList.remove('is-update')
+  speechBubble.removeAttribute('role')
+  speechBubble.setAttribute('role', 'status')
+  speechBubble.title = ''
+  speechBubble.tabIndex = -1
+}
+
+function showUpdateBubble(info: AppUpdateInfo, force = false): void {
+  if (!info.available || !info.latest_version) return
+  pendingUpdateInfo = info
+  // Queue until the pet is free (settings open / dock peek).
+  if (!force && (settingsOpen || isDockPeek())) return
+
+  updateBubbleActive = true
+  const version = info.latest_version.replace(/^v/i, '')
+  lastBubbleLine = `有新版本 v${version}`
+  speechText.textContent = `有新版本 v${version}，点我更新～`
+  speechBubble.classList.add('is-visible', 'is-update')
+  speechBubble.setAttribute('role', 'button')
+  speechBubble.tabIndex = 0
+  speechBubble.title = '点击下载并安装新版本'
+  window.clearTimeout(bubbleTimer)
+  // Keep the update prompt around long enough to notice and click.
+  bubbleTimer = window.setTimeout(() => {
+    if (updateBubbleActive) {
+      speechBubble.classList.remove('is-visible')
+      speechBubble.classList.remove('is-update')
+      updateBubbleActive = false
+    }
+  }, 45000)
+  scheduleIdleChatter()
+}
+
+async function openPendingUpdate(fromSettings = false): Promise<void> {
+  const info = pendingUpdateInfo
+  if (!info?.available) return
+  const url = info.download_url || info.html_url
+  if (!url) {
+    showToast('未找到下载地址', 'error')
+    if (fromSettings) {
+      setSettingsUpdateUi({
+        status: '未找到下载地址，请前往 GitHub Releases',
+        button: '检查更新',
+        available: true,
+        latest: info.latest_version,
+      })
+    }
     return
   }
-
-  checkUpdateButton.disabled = true
-  updateLabel.textContent = '正在下载…'
-  let downloaded = 0
-  let total = 0
   try {
-    await update.downloadAndInstall((event) => {
-      if (event.event === 'Started') total = event.data.contentLength ?? 0
-      if (event.event === 'Progress') downloaded += event.data.chunkLength
-      if (event.event === 'Finished') updateLabel.textContent = '正在安装…'
-      if (total > 0 && event.event === 'Progress') {
-        updateLabel.textContent = `下载 ${Math.min(100, Math.round((downloaded / total) * 100))}%`
-      }
-    })
-    await relaunch()
+    if (isDesktop) await openUrl(url)
+    else window.open(url, '_blank', 'noopener')
+    showToast(`正在打开 v${(info.latest_version || '').replace(/^v/i, '')} 下载…`)
+    clearUpdateBubbleState()
+    if (fromSettings) {
+      setSettingsUpdateUi({
+        status: `已打开 ${formatAppVersion(info.latest_version)} 下载页，安装后重启应用`,
+        button: '检查更新',
+        available: true,
+        latest: info.latest_version,
+      })
+    } else {
+      // Pet bubble: stop re-prompting this version until the next background check.
+      pendingUpdateInfo = null
+      showSpeechBubble('浏览器打开下载页啦，装完重启我就行～', 3200)
+    }
   } catch (error) {
-    updateLabel.textContent = '升级失败'
-    showToast(`升级失败：${errorMessage(error)}`, 'error')
-    checkUpdateButton.disabled = false
+    showToast(errorMessage(error), 'error')
   }
 }
 
@@ -419,23 +544,59 @@ async function checkForUpdate(manual = false): Promise<void> {
   if (!isDesktop || checkingUpdate) return
   checkingUpdate = true
   checkUpdateButton.disabled = true
-  updateLabel.textContent = '正在检查…'
+  downloadUpdateButton.disabled = true
+  if (manual || settingsOpen) {
+    setSettingsUpdateUi({
+      status: '正在检查 GitHub 最新版本…',
+      button: '检查中…',
+      available: Boolean(pendingUpdateInfo?.available),
+      latest: pendingUpdateInfo?.latest_version,
+    })
+  }
   try {
-    const update = await check()
-    if (update) {
-      updateLabel.textContent = `发现 v${update.version}`
-      await installUpdate(update)
+    const info = await invoke<AppUpdateInfo>('check_app_update')
+    currentAppVersion = info.current_version || currentAppVersion
+    appVersionLabel.textContent = formatAppVersion(currentAppVersion)
+    if (info.available && info.latest_version) {
+      pendingUpdateInfo = info
+      setSettingsUpdateUi({
+        status: `发现新版本 ${formatAppVersion(info.latest_version)}（当前 ${formatAppVersion(info.current_version)}）`,
+        button: '重新检查',
+        available: true,
+        latest: info.latest_version,
+      })
+      // Always try the pet bubble (queued if settings/dock is open).
+      showUpdateBubble(info, false)
     } else {
-      updateLabel.textContent = '已是最新版'
-      if (manual) showToast('当前已是最新版本')
+      pendingUpdateInfo = null
+      setSettingsUpdateUi({
+        status: manual
+          ? `已是最新版本 ${formatAppVersion(info.current_version)}`
+          : `当前 ${formatAppVersion(info.current_version)} · 已是最新`,
+        button: '检查更新',
+        available: false,
+      })
+      if (manual) showToast(`当前已是最新版本（${formatAppVersion(info.current_version)}）`)
     }
   } catch (error) {
-    updateLabel.textContent = '检查失败'
+    setSettingsUpdateUi({
+      status: `检查失败：${errorMessage(error)}`,
+      button: '检查更新',
+      available: Boolean(pendingUpdateInfo?.available),
+      latest: pendingUpdateInfo?.latest_version,
+    })
     if (manual) showToast(`检查更新失败：${errorMessage(error)}`, 'error')
   } finally {
     checkingUpdate = false
     checkUpdateButton.disabled = false
+    downloadUpdateButton.disabled = false
   }
+}
+
+function startUpdatePolling(): void {
+  window.clearInterval(updateCheckTimer)
+  // Quiet background check every 6 hours.
+  updateCheckTimer = window.setInterval(() => void checkForUpdate(false), 6 * 60 * 60 * 1000)
 }
 
 function errorMessage(error: unknown): string {
@@ -917,10 +1078,17 @@ function pickLine(lines: string[]): string {
 function hideSpeechBubble(): void {
   window.clearTimeout(bubbleTimer)
   speechBubble.classList.remove('is-visible')
+  if (updateBubbleActive) {
+    speechBubble.classList.remove('is-update')
+    updateBubbleActive = false
+  }
 }
 
 function showSpeechBubble(message: string, durationMs = 2600): void {
   if (!message || settingsOpen || isDockPeek()) return
+  // Don't clobber an active clickable update prompt with ambient chatter.
+  if (updateBubbleActive && speechBubble.classList.contains('is-visible')) return
+  clearUpdateBubbleState()
   lastBubbleLine = message
   speechText.textContent = message
   speechBubble.classList.add('is-visible')
@@ -972,6 +1140,11 @@ function randomPlayMood(): 'happy' | 'cute' | 'silly' {
 /** Random playful reaction when the pet is tapped (not dragged, not double-clicked). */
 function playReaction(): void {
   if (refreshing || settingsOpen || isDockPeek()) return
+  // Prefer surfacing a pending update over playful chatter.
+  if (pendingUpdateInfo?.available) {
+    showUpdateBubble(pendingUpdateInfo, true)
+    return
+  }
 
   window.clearTimeout(tapStreakTimer)
   tapStreak += 1
@@ -1010,6 +1183,11 @@ function scheduleIdleChatter(): void {
   idleChatterTimer = window.setTimeout(() => {
     if (refreshing || settingsOpen || isDockPeek() || speechBubble.classList.contains('is-visible')) {
       scheduleIdleChatter()
+      return
+    }
+    // Re-surface a pending update so the user can still click later.
+    if (pendingUpdateInfo?.available) {
+      showUpdateBubble(pendingUpdateInfo)
       return
     }
     const lowest = lowestActiveRemaining()
@@ -1816,6 +1994,11 @@ async function handleMenuAction(action: string): Promise<void> {
 
 petButton.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return
+  // Ignore the second mousedown of a double-click (detail >= 2) so OS maximize never arms.
+  if (event.detail > 1) {
+    event.preventDefault()
+    return
+  }
   pressActive = true
   dragStarted = false
   pressStartX = event.screenX
@@ -1837,6 +2020,26 @@ window.addEventListener('mouseup', () => {
   if (!dragStarted) playReaction()
   // After a click without drag, re-evaluate hover so dock can collapse if needed.
   if (dockEdge && !shell.matches(':hover')) scheduleDockHover(false)
+})
+
+// Prevent titlebar-style double-click maximize (borderless pet must stay compact).
+petButton.addEventListener('dblclick', (event) => {
+  event.preventDefault()
+  event.stopPropagation()
+  pressActive = false
+  dragStarted = false
+  if (isDesktop) {
+    const win = getCurrentWindow()
+    void win.setMaximizable(false)
+    void win.unmaximize().catch(() => {})
+  }
+})
+shell.addEventListener('dblclick', (event) => {
+  event.preventDefault()
+  if (isDesktop) {
+    void getCurrentWindow().setMaximizable(false)
+    void getCurrentWindow().unmaximize().catch(() => {})
+  }
 })
 
 // Docked peek ↔ full pet + meters while the pointer is over the window.
@@ -1892,6 +2095,31 @@ element('#logout-button').addEventListener('click', async () => {
   await setSettingsOpen(true)
 })
 checkUpdateButton.addEventListener('click', () => void checkForUpdate(true))
+downloadUpdateButton.addEventListener('click', () => {
+  if (pendingUpdateInfo?.available) void openPendingUpdate(true)
+  else void checkForUpdate(true)
+})
+
+// Click / keyboard activate the update speech bubble to open the download.
+speechBubble.addEventListener('click', (event) => {
+  if (!pendingUpdateInfo?.available) return
+  event.preventDefault()
+  event.stopPropagation()
+  void openPendingUpdate(false)
+})
+speechBubble.addEventListener('mousedown', (event) => {
+  if (!pendingUpdateInfo?.available) return
+  event.preventDefault()
+  event.stopPropagation()
+})
+speechBubble.addEventListener('keydown', (event) => {
+  if (!pendingUpdateInfo?.available) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    event.stopPropagation()
+    void openPendingUpdate(false)
+  }
+})
 
 if (isDesktop) {
   void listen('open-settings', () => void setSettingsOpen(true))
@@ -1904,7 +2132,12 @@ if (isDesktop) {
   })
   void listen('settings-closed', () => {
     settingsOpen = false
-    scheduleIdleChatter()
+    // Surface a queued update prompt once the settings window is gone.
+    if (pendingUpdateInfo?.available) {
+      window.setTimeout(() => showUpdateBubble(pendingUpdateInfo!, true), 280)
+    } else {
+      scheduleIdleChatter()
+    }
   })
   void listen<{ kind: string; payload?: unknown }>('settings-changed', (event) => {
     void onSettingsChanged(event.payload.kind, event.payload.payload)
@@ -1913,7 +2146,16 @@ if (isDesktop) {
 
 async function initialize(): Promise<void> {
   await loadSettings()
-  if (isDesktop) window.setTimeout(() => void checkForUpdate(), 3000)
+  await loadAppVersion()
+  if (isDesktop) {
+    const win = getCurrentWindow()
+    // Pet is a fixed-size overlay — never allow maximize / fullscreen chrome.
+    void win.setMaximizable(false)
+    void win.unmaximize().catch(() => {})
+    // Check soon after boot so the update bubble can replace the greeting if needed.
+    window.setTimeout(() => void checkForUpdate(false), 2500)
+    startUpdatePolling()
+  }
   await registerPositionPersistence()
   connected = isDesktop ? await invoke<boolean>('has_session') : true
   if (isDesktop) await getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop)
@@ -1927,14 +2169,18 @@ async function initialize(): Promise<void> {
     await refreshQuota(false)
     await applyWindowSize()
     window.setTimeout(() => {
-      showSpeechBubble(
-        pickLine([
-          '我在这里盯着额度哦',
-          '点我可以互动～',
-          isWindows ? '托盘图标也能打开菜单哦' : '右键打开菜单哦',
-        ]),
-        3000,
-      )
+      if (pendingUpdateInfo?.available) {
+        showUpdateBubble(pendingUpdateInfo, true)
+      } else {
+        showSpeechBubble(
+          pickLine([
+            '我在这里盯着额度哦',
+            '点我可以互动～',
+            isWindows ? '托盘图标也能打开菜单哦' : '右键打开菜单哦',
+          ]),
+          3000,
+        )
+      }
       setMood('happy')
       moodTimer = window.setTimeout(() => setMood(restingMood()), 1400)
     }, 600)

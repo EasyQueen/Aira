@@ -189,6 +189,31 @@ html.is-windows .pet-shell {
   transform: translate(-50%, 0) scale(1);
 }
 
+/* Clickable update prompt — sits above the pet and opens the download. */
+.speech-bubble.is-update {
+  pointer-events: auto;
+  cursor: pointer;
+  border-color: rgba(65, 141, 217, 0.45);
+  color: #1f4f86;
+  background: linear-gradient(165deg, #f4f9ff 0%, #e7f1fc 100%);
+  box-shadow: 0 6px 16px rgba(45, 100, 170, 0.18);
+}
+
+.speech-bubble.is-update::after {
+  border-right-color: rgba(65, 141, 217, 0.45);
+  border-bottom-color: rgba(65, 141, 217, 0.45);
+  background: #eaf3fc;
+}
+
+.speech-bubble.is-update:hover {
+  transform: translate(-50%, -1px) scale(1.03);
+}
+
+.speech-bubble.is-update .speech-text {
+  cursor: pointer;
+  font-weight: 700;
+}
+
 .speech-text {
   margin: 0;
   word-break: break-word;
@@ -965,11 +990,139 @@ h1 {
   opacity: 0.65;
 }
 
+/* About / update card in settings */
+.about-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 12px 11px;
+  border: 1px solid #e3eaf3;
+  border-radius: 14px;
+  background:
+    linear-gradient(165deg, rgba(248, 251, 255, 0.98) 0%, rgba(241, 246, 252, 0.96) 100%);
+  box-shadow: 0 4px 12px rgba(50, 70, 100, 0.04);
+}
+
+.about-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.about-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.about-eyebrow {
+  color: #8a98ad;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.about-title strong {
+  color: #1e304a;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.about-version {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: none;
+  padding: 5px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid #e5ebf3;
+}
+
+.about-version-label {
+  color: #8a98ad;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.about-version-value {
+  color: #2d66ac;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.about-status {
+  margin: 0;
+  color: #66758c;
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.about-status.has-update {
+  color: #1f4f86;
+  font-weight: 650;
+}
+
+.about-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.about-update-btn,
+.about-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid #d7e2ef;
+  border-radius: 999px;
+  color: #3a5f8f;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.about-update-btn:hover,
+.about-download-btn:hover {
+  color: #1f4f86;
+  border-color: #b7cce6;
+  background: #f4f8fd;
+}
+
+.about-download-btn {
+  color: #fff;
+  border-color: #3479be;
+  background: #3479be;
+}
+
+.about-download-btn:hover {
+  color: #fff;
+  border-color: #2868a6;
+  background: #2868a6;
+}
+
+.about-update-btn svg,
+.about-download-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
 .settings-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 18px;
+  margin-top: 14px;
   padding-bottom: 8px;
   color: #929dae;
   font-size: 9px;
