@@ -55,6 +55,7 @@ Sub2API Pet 连接你的 **Sub2API** 管理后台，拉取账号池中所有 AI 
 - 🐱 **桌面宠物**：透明无边框、始终置顶、可自由拖动；单击互动、随心情切换表情、低额度自动进入告警状态；拖到屏幕边缘自动收起为「贴边」小图标，鼠标移上去再展开。
 - 📊 **实时额度**：展示账号池中全部 Claude / Codex / Grok 账号的剩余额度，默认每 30 秒读取一次缓存数据，可手动强制刷新。
 - 🧭 **菜单栏托盘**：原生菜单，账号额度用 Unicode 进度条 + 百分比 + 重置时间呈现，菜单栏图标旁常显总体额度。
+- 🎹 **触控栏（Touch Bar）**：MacBook 触控栏显示总体额度进度条与在线 / 异常统计，随刷新实时更新（macOS 只在应用处于前台时显示触控栏内容）。
 - 🗂 **账号面板**：一个窗口看全部账号，汇总卡片 + 平台分组 + 每个时间窗口的进度条。
 - 🎛 **可定制展示**：按模型（Claude / Codex / Grok）筛选、限制展示账号数、调节刷新频率与卡片透明度。
 - 🔐 **安全**：支持两步验证（TOTP）、access token 自动续期；refresh token 保存在系统钥匙串，密码不落盘。
@@ -108,6 +109,32 @@ Sub2API Pet 连接你的 **Sub2API** 管理后台，拉取账号池中所有 AI 
 **账号面板**
 - 从托盘菜单或宠物右键菜单的「打开账号面板」进入；也可点击托盘菜单里的任意账号行。
 - 这是一个普通的可缩放窗口，会随刷新实时更新，按 `Esc` 关闭。
+
+**触控栏（Touch Bar）**
+- 点击宠物或与其交互，使应用处于前台时，触控栏显示总体额度进度条与「在线 / 异常」统计；低额度（≤15%）时额度文字追加「· 低」。
+- macOS 只显示当前前台应用的触控栏，因此该显示不会跨应用常驻。
+
+### 触控栏常驻（免费，MTMR）
+
+想让额度**跨所有应用常驻**在触控栏，用免费的 [MTMR](https://github.com/Toxblh/MTMR)（My TouchBar My Rules）即可，无需付费。应用每次刷新都会把一行状态写到 `~/.sub2api-pet-quota.txt`，MTMR 常驻读取它并显示在触控栏上：
+
+1. 安装 MTMR：`brew install --cask mtmr`（或从 GitHub Releases 下载）。
+2. 在 `~/Library/Application Support/MTMR/items.json` 放入配置（键名以 MTMR 文档为准）：
+
+```json
+[
+  {
+    "type": "shellScriptTitledButton",
+    "source": "cat ~/.sub2api-pet-quota.txt",
+    "refreshInterval": 5,
+    "action": "none"
+  }
+]
+```
+
+3. 运行 MTMR，额度即常驻触控栏，随应用刷新实时更新（文件内容形如 `额度 57% · 在线 3/5 · 异常 1`）。
+
+> 说明：MTMR 是免费开源项目，但近年维护较少，若在新版 macOS 上行为异常，请对照其 README 调整配置；同样的 `~/.sub2api-pet-quota.txt` 也适用于付费的 BetterTouchTool「运行 shell 脚本」小组件。
 
 **设置项**
 - 展示模型：勾选要在宠物 / 托盘 / 面板中展示的平台。

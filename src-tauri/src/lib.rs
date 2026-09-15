@@ -14,6 +14,9 @@ use tauri::{
 };
 use thiserror::Error;
 
+#[cfg(target_os = "macos")]
+mod touchbar;
+
 /// Max parallel quota fetches — avoids serial multi-second stalls on large pools.
 const QUOTA_FETCH_CONCURRENCY: usize = 6;
 
@@ -1749,6 +1752,38 @@ fn tray_overall_remaining(payload: &TrayMenuPayload) -> Option<f64> {
     }
 }
 
+/// One-line quota status for external Touch Bar helpers (MTMR / BetterTouchTool).
+fn touchbar_status_line(payload: &TrayMenuPayload) -> String {
+    let (total, online, abnormal) = tray_counts(payload);
+    let overall = tray_overall_remaining(payload)
+        .map(|value| format!("{}%", value.round().clamp(0.0, 100.0) as i64))
+        .unwrap_or_else(|| "--%".into());
+
+    if payload.refreshing {
+        return "同步中…".to_string();
+    }
+    if total == 0 {
+        return "暂无账号".to_string();
+    }
+    let mut line = format!("额度 {overall} · 在线 {online}/{total}");
+    if abnormal > 0 {
+        line.push_str(&format!(" · 异常 {abnormal}"));
+    }
+    line
+}
+
+/// Publish the quota to a plain-text file so a persistent Touch Bar helper can
+/// `cat` it and stay always-on. Free helpers (MTMR) and paid ones (BetterTouchTool)
+/// both consume this same file.
+#[cfg(target_os = "macos")]
+fn publish_touchbar_status_file(payload: &TrayMenuPayload) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(home).join(".sub2api-pet-quota.txt");
+    let _ = std::fs::write(path, format!("{}\n", touchbar_status_line(payload)));
+}
+
 fn apply_tray_title_and_tooltip<R: Runtime>(
     app: &AppHandle<R>,
     payload: &TrayMenuPayload,
@@ -1785,6 +1820,15 @@ fn apply_tray_title_and_tooltip<R: Runtime>(
     }
     tray.set_tooltip(Some(&tooltip))
         .map_err(|error| PetError::Api(error.to_string()))?;
+
+    // Keep the native Touch Bar (macOS) in sync with the latest quota.
+    #[cfg(target_os = "macos")]
+    touchbar::apply(app, payload);
+
+    // Publish the same status for persistent Touch Bar helpers (MTMR / BTT).
+    #[cfg(target_os = "macos")]
+    publish_touchbar_status_file(payload);
+
     Ok(())
 }
 
@@ -1975,6 +2019,9 @@ pub fn run() {
                 })
                 .build(app)?;
             let _ = apply_tray_title_and_tooltip(&app.handle(), &empty);
+
+            #[cfg(target_os = "macos")]
+            touchbar::setup();
 
             // Warm secondary WebViews at startup so the first open is not a cold blank frame
             // (WebView2 on Windows is especially slow to create on demand).
