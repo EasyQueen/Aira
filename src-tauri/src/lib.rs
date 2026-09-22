@@ -17,6 +17,9 @@ use thiserror::Error;
 #[cfg(target_os = "macos")]
 mod touchbar;
 
+#[cfg(target_os = "macos")]
+mod macos_window;
+
 /// Max parallel quota fetches — avoids serial multi-second stalls on large pools.
 const QUOTA_FETCH_CONCURRENCY: usize = 6;
 
@@ -241,7 +244,10 @@ async fn authorized_request(
             return decode_response(response).await;
         }
         if attempt == 0 {
-            tokens = refresh_access_token(state, tokens).await?;
+            tokens = match refresh_access_token(state, tokens).await {
+                Ok(new_tokens) => new_tokens,
+                Err(_) => return Err(PetError::Unauthorized),
+            };
         }
     }
     Err(PetError::Unauthorized)
@@ -1365,6 +1371,8 @@ fn tray_window_labels(account: &TrayAccountPayload) -> Vec<(String, String)> {
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "macos")]
+        macos_window::configure_spaces_window(&window);
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -2000,7 +2008,12 @@ pub fn run() {
         })
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                if let Some(main_win) = app.get_webview_window("main") {
+                    macos_window::configure_spaces_window(&main_win);
+                }
+            }
 
             let empty = TrayMenuPayload::default();
             let menu = build_tray_menu(&app.handle(), &empty)?;

@@ -16,42 +16,6 @@ import {
   LogOut,
   RefreshCw,
 } from 'lucide'
-import petDefault from './assets/pets/pet.png'
-import petHappy from './assets/pets/pet-happy.png'
-import petCute from './assets/pets/pet-cute.png'
-import petSilly from './assets/pets/pet-silly.png'
-import petEdgeTop from './assets/pets/pet-top.png'
-import petEdgeBottom from './assets/pets/pet-bottom.png'
-import petEdgeLeft from './assets/pets/pet-left.png'
-import petEdgeRight from './assets/pets/pet-right.png'
-
-/** Base status moods (driven by app state) plus playful interaction reactions. */
-type PetMood = 'idle' | 'refreshing' | 'success' | 'alert' | 'happy' | 'cute' | 'silly'
-/** Screen edge the pet is leaning against, or null when free-floating. */
-type DockEdge = 'top' | 'bottom' | 'left' | 'right'
-
-const MOOD_IMAGES: Record<PetMood, string> = {
-  idle: petDefault,
-  refreshing: petCute,
-  success: petHappy,
-  alert: petSilly,
-  happy: petHappy,
-  cute: petCute,
-  silly: petSilly,
-}
-
-const EDGE_IMAGES: Record<DockEdge, string> = {
-  top: petEdgeTop,
-  bottom: petEdgeBottom,
-  left: petEdgeLeft,
-  right: petEdgeRight,
-}
-
-// Warm the browser cache so swapping moods / docking doesn't flash a blank frame.
-for (const src of new Set([...Object.values(MOOD_IMAGES), ...Object.values(EDGE_IMAGES)])) {
-  const preload = new Image()
-  preload.src = src
-}
 
 /** Display toggles for pool platforms (maps to Sub2API account.platform). */
 type ModelKey = 'claude' | 'codex' | 'grok'
@@ -153,57 +117,21 @@ let settingsOpen = false
 let refreshing = false
 let tempToken = ''
 let autoRefreshTimer: number | undefined
-let moodTimer: number | undefined
-let bubbleTimer: number | undefined
-let idleChatterTimer: number | undefined
 let moveSaveTimer: number | undefined
-let currentMood: PetMood = 'idle'
-let dockEdge: DockEdge | null = null
-/** Temporarily expanded from dock peek while the pointer is over the pet. */
-let dockHoverOpen = false
-let dockHoverTimer: number | undefined
-let dockHoverBusy = false
-/** True while we are programmatically repositioning, so onMoved snapping doesn't recurse. */
 let snapping = false
-/** True while the dock/undock presentation handoff is running. */
-let animating = false
-/** Consecutive playful taps; resets after a short idle window. */
-let tapStreak = 0
-let tapStreakTimer: number | undefined
-/** Avoid repeating the same bubble line back-to-back. */
-let lastBubbleLine = ''
-/** Peek dock is the collapsed edge footprint (not hover-expanded). Settings is a separate window. */
-function isDockPeek(): boolean {
-  return dockEdge != null && !dockHoverOpen
-}
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main class="pet-shell" id="pet-shell">
     <section class="pet-stage" aria-live="polite">
-      <div
-        class="pet-hitbox"
-        id="pet-button"
-        role="button"
-        tabindex="0"
-        aria-label="${isWindows ? '单击互动，按住拖动' : '单击互动，右键打开菜单，按住拖动'}"
-        title="${isWindows ? '单击互动 · 按住拖动' : '单击互动 · 右键菜单 · 按住拖动'}"
-      >
-        <div
-          class="speech-bubble"
-          id="speech-bubble"
-          role="status"
-          aria-live="polite"
-          title=""
-        >
-          <p class="speech-text" id="speech-text"></p>
-        </div>
-        <img class="pet-image" id="pet-image" src="${petDefault}" alt="Sub2API 桌面宠物" draggable="false" />
-        <img class="pet-peek" id="peek-image" alt="" aria-hidden="true" draggable="false" />
-        <span class="refresh-orbit" aria-hidden="true"><i data-lucide="refresh-cw"></i></span>
-      </div>
-
       <div class="quota-panel" id="quota-dock" aria-label="账号池额度面板">
-        <div class="meter-card" id="meter-card">
+        <div
+          class="meter-card"
+          id="meter-card"
+          role="button"
+          tabindex="0"
+          aria-label="${isWindows ? '单击刷新，按住拖动' : '单击刷新，右键打开菜单，按住拖动'}"
+          title="${isWindows ? '单击刷新 · 按住拖动' : '单击刷新 · 右键菜单 · 按住拖动'}"
+        >
           <div class="meter-board" id="account-list" role="list"></div>
         </div>
         <span class="visually-hidden" id="updated-label">尚未同步</span>
@@ -370,12 +298,8 @@ paintIcons()
 
 const element = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!
 const shell = element<HTMLElement>('#pet-shell')
-const petImage = element<HTMLImageElement>('#pet-image')
-const peekImage = element<HTMLImageElement>('#peek-image')
-const petButton = element<HTMLElement>('#pet-button')
-const speechBubble = element<HTMLElement>('#speech-bubble')
-const speechText = element<HTMLElement>('#speech-text')
 const quotaDock = element<HTMLElement>('#quota-dock')
+const meterCard = element<HTMLElement>('#meter-card')
 const accountList = element<HTMLElement>('#account-list')
 
 // Block native text/image selection on the pet stage (WebKit still selects otherwise).
@@ -467,39 +391,11 @@ async function loadAppVersion(): Promise<void> {
   }
 }
 
-function clearUpdateBubbleState(): void {
-  updateBubbleActive = false
-  speechBubble.classList.remove('is-update')
-  speechBubble.removeAttribute('role')
-  speechBubble.setAttribute('role', 'status')
-  speechBubble.title = ''
-  speechBubble.tabIndex = -1
-}
-
-function showUpdateBubble(info: AppUpdateInfo, force = false): void {
+function showUpdateBubble(info: AppUpdateInfo, _force = false): void {
   if (!info.available || !info.latest_version) return
   pendingUpdateInfo = info
-  // Queue until the pet is free (settings open / dock peek).
-  if (!force && (settingsOpen || isDockPeek())) return
-
-  updateBubbleActive = true
   const version = info.latest_version.replace(/^v/i, '')
-  lastBubbleLine = `有新版本 v${version}`
-  speechText.textContent = `有新版本 v${version}，点我更新～`
-  speechBubble.classList.add('is-visible', 'is-update')
-  speechBubble.setAttribute('role', 'button')
-  speechBubble.tabIndex = 0
-  speechBubble.title = '点击下载并安装新版本'
-  window.clearTimeout(bubbleTimer)
-  // Keep the update prompt around long enough to notice and click.
-  bubbleTimer = window.setTimeout(() => {
-    if (updateBubbleActive) {
-      speechBubble.classList.remove('is-visible')
-      speechBubble.classList.remove('is-update')
-      updateBubbleActive = false
-    }
-  }, 45000)
-  scheduleIdleChatter()
+  showToast(`发现新版本 v${version}，可在设置中更新`)
 }
 
 async function openPendingUpdate(fromSettings = false): Promise<void> {
@@ -522,7 +418,6 @@ async function openPendingUpdate(fromSettings = false): Promise<void> {
     if (isDesktop) await openUrl(url)
     else window.open(url, '_blank', 'noopener')
     showToast(`正在打开 v${(info.latest_version || '').replace(/^v/i, '')} 下载…`)
-    clearUpdateBubbleState()
     if (fromSettings) {
       setSettingsUpdateUi({
         status: `已打开 ${formatAppVersion(info.latest_version)} 下载页，安装后重启应用`,
@@ -531,9 +426,7 @@ async function openPendingUpdate(fromSettings = false): Promise<void> {
         latest: info.latest_version,
       })
     } else {
-      // Pet bubble: stop re-prompting this version until the next background check.
       pendingUpdateInfo = null
-      showSpeechBubble('浏览器打开下载页啦，装完重启我就行～', 3200)
     }
   } catch (error) {
     showToast(errorMessage(error), 'error')
@@ -763,233 +656,14 @@ async function registerPositionPersistence(): Promise<void> {
   const appWindow = getCurrentWindow()
   if (Number.isFinite(settings.windowX) && Number.isFinite(settings.windowY)) {
     await appWindow.setPosition(new PhysicalPosition(settings.windowX!, settings.windowY!))
-    // Restore a saved docked state instantly (no animation on launch).
-    const edge = await nearestEdge(settings.windowX!, settings.windowY!)
-    if (edge) {
-      setDock(edge)
-      await applyWindowSize()
-      await snapToEdge()
-    }
   }
   await appWindow.onMoved(({ payload }) => {
     if (snapping || settingsOpen) return
     settings.windowX = payload.x
     settings.windowY = payload.y
-    // Pose/size stays put while dragging; the transition plays once the drag settles.
     window.clearTimeout(moveSaveTimer)
-    moveSaveTimer = window.setTimeout(() => void finalizeMove(), 180)
+    moveSaveTimer = window.setTimeout(() => void saveSettings(), 200)
   })
-}
-
-interface WinRect {
-  x: number
-  y: number
-  w: number
-  h: number
-}
-
-/** Which edge (if any) the window is currently close enough to lean on. */
-async function nearestEdge(x: number, y: number): Promise<DockEdge | null> {
-  if (!isDesktop) return null
-  const monitor = await currentMonitor()
-  if (!monitor) return null
-  const size = await getCurrentWindow().outerSize()
-  const threshold = Math.round(34 * monitor.scaleFactor)
-  // Work area excludes the menu bar / dock / taskbar, so the top edge is reachable.
-  const waL = monitor.workArea.position.x
-  const waT = monitor.workArea.position.y
-  const waR = waL + monitor.workArea.size.width
-  const waB = waT + monitor.workArea.size.height
-  const dLeft = x - waL
-  const dTop = y - waT
-  const dRight = waR - (x + size.width)
-  const dBottom = waB - (y + size.height)
-  const nearest = Math.min(dLeft, dTop, dRight, dBottom)
-  if (nearest >= threshold) return null
-  if (nearest === dTop) return 'top'
-  if (nearest === dBottom) return 'bottom'
-  if (nearest === dLeft) return 'left'
-  return 'right'
-}
-
-/**
- * Target window rectangle (physical px).
- * - edge + peek: 48px dock footprint flush to that edge
- * - edge + expanded: full pet size still pinned to that edge (hover preview)
- * - null: free-floating full pet around the current center
- */
-async function targetRect(edge: DockEdge | null, expanded = false): Promise<WinRect | null> {
-  const monitor = await currentMonitor()
-  if (!monitor) return null
-  const sf = monitor.scaleFactor
-  const waL = monitor.workArea.position.x
-  const waT = monitor.workArea.position.y
-  const waR = waL + monitor.workArea.size.width
-  const waB = waT + monitor.workArea.size.height
-  const win = getCurrentWindow()
-  const cur = await win.outerSize()
-  const pos = await win.outerPosition()
-  const centerX = pos.x + cur.width / 2
-  const centerY = pos.y + cur.height / 2
-  let w: number
-  let h: number
-  if (edge && !expanded) {
-    w = Math.round(DOCK_SIZE * sf)
-    h = w
-  } else {
-    const s = petWindowSize()
-    w = Math.round(s.width * sf)
-    h = Math.round(s.height * sf)
-  }
-  // Shrink/grow around the current center, then pin the docked axis flush to the edge.
-  let x = Math.round(centerX - w / 2)
-  let y = Math.round(centerY - h / 2)
-  if (edge === 'top') y = waT
-  else if (edge === 'bottom') y = waB - h
-  else if (edge === 'left') x = waL
-  else if (edge === 'right') x = waR - w
-  x = Math.max(waL, Math.min(waR - w, x))
-  y = Math.max(waT, Math.min(waB - h, y))
-  return { x, y, w, h }
-}
-
-function transitionOrigin(edge: DockEdge | null): string {
-  if (edge === 'top') return 'center top'
-  if (edge === 'bottom') return 'center bottom'
-  if (edge === 'left') return 'left center'
-  if (edge === 'right') return 'right center'
-  return 'center center'
-}
-
-function transitionTransform(edge: DockEdge | null, scale: number): string {
-  if (edge === 'top') return `translateY(-4px) scale(${scale})`
-  if (edge === 'bottom') return `translateY(4px) scale(${scale})`
-  if (edge === 'left') return `translateX(-4px) scale(${scale})`
-  if (edge === 'right') return `translateX(4px) scale(${scale})`
-  return `scale(${scale})`
-}
-
-function nextAnimationFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()))
-}
-
-/**
- * Hand the visible pet pose over while the transparent native window is hidden.
- * Resizing a transparent window on every animation frame leaves compositor trails on
- * some systems. A short sequential fade keeps only one pose visible and lets the
- * native window move/resize exactly once between the two halves of the transition.
- */
-async function transitionWindowPresentation(
-  target: WinRect,
-  updatePresentation: () => void,
-  edge: DockEdge | null,
-): Promise<void> {
-  if (!isDesktop) return
-  const win = getCurrentWindow()
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  let outgoing: Animation | null = null
-  let incoming: Animation | null = null
-  snapping = true
-  animating = true
-  const previousOrigin = petStage.style.transformOrigin
-  petStage.style.transformOrigin = transitionOrigin(edge)
-
-  try {
-    if (!reducedMotion) {
-      outgoing = petStage.animate(
-        [
-          { opacity: 1, transform: 'translate(0, 0) scale(1)' },
-          { opacity: 0, transform: transitionTransform(edge, 0.92) },
-        ],
-        { duration: 85, easing: 'ease-in', fill: 'forwards' },
-      )
-      await outgoing.finished
-    }
-
-    // The stage is fully transparent here. Resize first, then place the final rectangle;
-    // serial AppKit updates avoid the occasional right/bottom-edge race from parallel IPC.
-    await win.setSize(new PhysicalSize(target.w, target.h))
-    await win.setPosition(new PhysicalPosition(target.x, target.y))
-    updatePresentation()
-    settings.windowX = target.x
-    settings.windowY = target.y
-
-    if (!reducedMotion) {
-      // Keep the old pose fully transparent until the resized webview has laid out.
-      await nextAnimationFrame()
-      incoming = petStage.animate(
-        [
-          { opacity: 0, transform: transitionTransform(edge, 0.95) },
-          { opacity: 1, transform: 'translate(0, 0) scale(1)' },
-        ],
-        { duration: 160, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1)', fill: 'both' },
-      )
-      outgoing?.cancel()
-      outgoing = null
-      await incoming.finished
-    }
-  } finally {
-    outgoing?.cancel()
-    incoming?.cancel()
-    petStage.style.transformOrigin = previousOrigin
-    animating = false
-    window.setTimeout(() => {
-      snapping = false
-    }, 60)
-  }
-}
-
-/** After a drag settles, play the fluid transition into / out of the leaning state. */
-async function finalizeMove(): Promise<void> {
-  if (!isDesktop || animating || settingsOpen) return
-  window.clearTimeout(dockHoverTimer)
-  const edge = await nearestEdge(settings.windowX ?? 0, settings.windowY ?? 0)
-  if (edge && !dockEdge) {
-    const rect = await targetRect(edge, false)
-    if (rect) await transitionWindowPresentation(rect, () => setDock(edge), edge)
-    else setDock(edge)
-  } else if (!edge && dockEdge) {
-    const alreadyExpanded = dockHoverOpen
-    if (alreadyExpanded) {
-      // Hover expansion already uses the full layout and window size; only detach state.
-      setDock(null)
-    } else {
-      const rect = await targetRect(null)
-      if (rect) await transitionWindowPresentation(rect, () => setDock(null), dockEdge)
-      else setDock(null)
-    }
-  } else if (edge && dockEdge && edge !== dockEdge) {
-    dockHoverOpen = false
-    const rect = await targetRect(edge, false)
-    if (rect) await transitionWindowPresentation(rect, () => setDock(edge), edge)
-    else setDock(edge)
-  } else if (edge && dockEdge) {
-    // Nudged along the same edge: keep it flush without a full animation.
-    dockHoverOpen = false
-    applyDockPresentation()
-    await snapToEdge()
-  }
-  await saveSettings()
-}
-
-/** Snap the docked window flush to its edge (used on launch / same-edge nudges). */
-async function snapToEdge(): Promise<void> {
-  if (!isDesktop || !dockEdge) return
-  const rect = await targetRect(dockEdge, dockHoverOpen)
-  if (!rect) return
-  if (rect.x === settings.windowX && rect.y === settings.windowY) return
-  snapping = true
-  try {
-    const win = getCurrentWindow()
-    await win.setPosition(new PhysicalPosition(rect.x, rect.y))
-    settings.windowX = rect.x
-    settings.windowY = rect.y
-    await saveSettings()
-  } finally {
-    window.setTimeout(() => {
-      snapping = false
-    }, 120)
-  }
 }
 
 function formatClock(value: string): string {
@@ -1005,295 +679,6 @@ function formatReset(value?: string): string {
   const weekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'short' }).format(date)
   const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   return `${weekday} ${time} 重置`
-}
-
-function applyPetImage(): void {
-  // The transition hides the stage while handing over between these two art layers.
-  petImage.src = MOOD_IMAGES[currentMood]
-  if (dockEdge) peekImage.src = EDGE_IMAGES[dockEdge]
-}
-
-function setMood(mood: PetMood): void {
-  window.clearTimeout(moodTimer)
-  currentMood = mood
-  shell.dataset.mood = mood
-  applyPetImage()
-}
-
-const REACTION_LINES: Record<'happy' | 'cute' | 'silly', string[]> = {
-  happy: [
-    '嘿嘿，被摸到啦～',
-    '心情超好！今天也冲！',
-    '摸摸有效，继续加油写代码',
-    '嘻嘻，再点一下？',
-    '状态拉满！',
-  ],
-  cute: [
-    '再摸一下嘛…',
-    '呜呜好开心～',
-    '要一起盯额度吗？',
-    '轻轻的…好舒服',
-    '粘人模式已开启',
-  ],
-  silly: [
-    '欸？点我干嘛～',
-    '别戳啦，会变傻的',
-    '配额还够用吗？',
-    '被抓包了！',
-    '诶嘿，被你发现啦',
-  ],
-}
-
-const STREAK_LINES = [
-  '连续互动！你很闲嘛～',
-  '停不下来了对吧',
-  '再点我就要飞走了哦',
-  '好啦好啦，我知道你在',
-]
-
-const TIP_LINES = isWindows
-  ? [
-      '右键托盘图标可以打开操作菜单',
-      '托盘菜单里可以刷新额度哦',
-      '把我拖到屏幕边缘会躲起来',
-      '低额度时我会提醒你哦',
-      '单击我可以聊天互动',
-    ]
-  : [
-      '右键我可以打开操作菜单',
-      '菜单里可以刷新额度哦',
-      '把我拖到屏幕边缘会躲起来',
-      '右键托盘图标也能打开菜单',
-      '低额度时我会提醒你哦',
-      '单击我可以聊天互动',
-    ]
-
-function pickLine(lines: string[]): string {
-  if (!lines.length) return ''
-  const filtered = lines.filter((line) => line !== lastBubbleLine)
-  const pool = filtered.length ? filtered : lines
-  return pool[Math.floor(Math.random() * pool.length)]
-}
-
-function hideSpeechBubble(): void {
-  window.clearTimeout(bubbleTimer)
-  speechBubble.classList.remove('is-visible')
-  if (updateBubbleActive) {
-    speechBubble.classList.remove('is-update')
-    updateBubbleActive = false
-  }
-}
-
-function showSpeechBubble(message: string, durationMs = 2600): void {
-  if (!message || settingsOpen || isDockPeek()) return
-  // Don't clobber an active clickable update prompt with ambient chatter.
-  if (updateBubbleActive && speechBubble.classList.contains('is-visible')) return
-  clearUpdateBubbleState()
-  lastBubbleLine = message
-  speechText.textContent = message
-  speechBubble.classList.add('is-visible')
-  window.clearTimeout(bubbleTimer)
-  bubbleTimer = window.setTimeout(() => {
-    speechBubble.classList.remove('is-visible')
-  }, durationMs)
-  scheduleIdleChatter()
-}
-
-function lowestActiveRemaining(): number | null {
-  let lowest: number | null = null
-  for (const row of poolRows) {
-    if (row.status !== 'active') continue
-    const remaining = lowestRemaining(row)
-    if (remaining == null) continue
-    lowest = lowest == null ? remaining : Math.min(lowest, remaining)
-  }
-  return lowest
-}
-
-function contextualTapLine(): string | null {
-  if (!connected) return '先连上 Sub2API 吧～'
-  const lowest = lowestActiveRemaining()
-  if (lowest != null && lowest <= 15) {
-    return pickLine([
-      `有账号只剩 ${Math.round(lowest)}% 了…`,
-      '额度告急，记得留意一下！',
-      isWindows ? '托盘菜单里可以刷新额度哦' : '右键我，选刷新额度看看',
-    ])
-  }
-  if (lowest != null && lowest <= 35 && Math.random() < 0.45) {
-    return pickLine([
-      `最低额度大概 ${Math.round(lowest)}%`,
-      '这波额度还算健康～',
-      '继续盯着，别超了',
-    ])
-  }
-  if (poolRows.length === 0 && connected) {
-    return '账号池还是空的哦'
-  }
-  return null
-}
-
-function randomPlayMood(): 'happy' | 'cute' | 'silly' {
-  return (['happy', 'cute', 'silly'] as const)[Math.floor(Math.random() * 3)]
-}
-
-/** Random playful reaction when the pet is tapped (not dragged, not double-clicked). */
-function playReaction(): void {
-  if (refreshing || settingsOpen || isDockPeek()) return
-  // Prefer surfacing a pending update over playful chatter.
-  if (pendingUpdateInfo?.available) {
-    showUpdateBubble(pendingUpdateInfo, true)
-    return
-  }
-
-  window.clearTimeout(tapStreakTimer)
-  tapStreak += 1
-  tapStreakTimer = window.setTimeout(() => {
-    tapStreak = 0
-  }, 2200)
-
-  let mood: PetMood
-  let line: string
-
-  if (tapStreak >= 4) {
-    mood = 'silly'
-    line = pickLine(STREAK_LINES)
-  } else {
-    const context = contextualTapLine()
-    if (context && Math.random() < 0.55) {
-      mood = restingMood() === 'alert' ? (Math.random() < 0.55 ? 'alert' : 'silly') : randomPlayMood()
-      line = context
-    } else {
-      mood = randomPlayMood()
-      line = pickLine(REACTION_LINES[mood])
-    }
-  }
-
-  setMood(mood)
-  showSpeechBubble(line, 2800)
-  const holdMs = mood === 'alert' ? 1800 : 1500
-  moodTimer = window.setTimeout(() => setMood(restingMood()), holdMs)
-}
-
-function scheduleIdleChatter(): void {
-  window.clearTimeout(idleChatterTimer)
-  if (!connected || settingsOpen || isDockPeek()) return
-  // Ambient tip bubbles so the pet feels alive without constant noise.
-  const delay = 45000 + Math.floor(Math.random() * 50000)
-  idleChatterTimer = window.setTimeout(() => {
-    if (refreshing || settingsOpen || isDockPeek() || speechBubble.classList.contains('is-visible')) {
-      scheduleIdleChatter()
-      return
-    }
-    // Re-surface a pending update so the user can still click later.
-    if (pendingUpdateInfo?.available) {
-      showUpdateBubble(pendingUpdateInfo)
-      return
-    }
-    const lowest = lowestActiveRemaining()
-    let line: string
-    if (lowest != null && lowest <= 15) {
-      line = pickLine([
-        '有账号额度偏低了…',
-        isWindows ? '托盘菜单里可以刷新哦' : '右键菜单可以刷新哦',
-        '注意配额哦～',
-      ])
-      setMood('alert')
-      moodTimer = window.setTimeout(() => setMood(restingMood()), 1600)
-    } else {
-      line = pickLine(TIP_LINES)
-      setMood('cute')
-      moodTimer = window.setTimeout(() => setMood(restingMood()), 1400)
-    }
-    showSpeechBubble(line, 3200)
-  }, delay)
-}
-
-/** Apply dock CSS / images for the current dockEdge + hover expand state. */
-function applyDockPresentation(): void {
-  const peek = isDockPeek()
-  shell.classList.toggle('is-docked', peek)
-  if (dockEdge) shell.dataset.dock = dockEdge
-  else delete shell.dataset.dock
-  applyPetImage()
-  if (peek) {
-    hideSpeechBubble()
-    window.clearTimeout(idleChatterTimer)
-  } else if (!dockEdge) {
-    scheduleIdleChatter()
-  }
-}
-
-/** Switch between free-floating and leaning-against-an-edge presentation. */
-function setDock(edge: DockEdge | null): void {
-  if (edge === dockEdge) return
-  window.clearTimeout(dockHoverTimer)
-  dockEdge = edge
-  dockHoverOpen = false
-  applyDockPresentation()
-}
-
-/**
- * While docked, hover expands to the full pet + meters; leave collapses back to the peek.
- * The outgoing pose disappears before the native window changes size, then the incoming
- * pose appears. This avoids both transparent-window trails and double-image ghosting.
- */
-async function setDockHoverOpen(open: boolean): Promise<void> {
-  if (!isDesktop || !dockEdge || settingsOpen || dockHoverBusy || pressActive) return
-  if (open === dockHoverOpen) return
-  dockHoverBusy = true
-  try {
-    if (open) {
-      const rect = await targetRect(dockEdge, true)
-      if (rect) {
-        await transitionWindowPresentation(
-          rect,
-          () => {
-            dockHoverOpen = true
-            applyDockPresentation()
-          },
-          dockEdge,
-        )
-      } else {
-        dockHoverOpen = true
-        applyDockPresentation()
-      }
-    } else {
-      const rect = await targetRect(dockEdge, false)
-      if (rect) {
-        await transitionWindowPresentation(
-          rect,
-          () => {
-            dockHoverOpen = false
-            applyDockPresentation()
-          },
-          dockEdge,
-        )
-      } else {
-        dockHoverOpen = false
-        applyDockPresentation()
-      }
-    }
-  } finally {
-    dockHoverBusy = false
-    // If the pointer already left during the expand animation, collapse again.
-    if (dockHoverOpen && !shell.matches(':hover') && !pressActive) {
-      window.clearTimeout(dockHoverTimer)
-      dockHoverTimer = window.setTimeout(() => void setDockHoverOpen(false), 80)
-    }
-  }
-}
-
-function scheduleDockHover(open: boolean): void {
-  if (!dockEdge || settingsOpen) return
-  window.clearTimeout(dockHoverTimer)
-  if (open) {
-    // Small delay avoids accidental expand while dragging past the edge.
-    dockHoverTimer = window.setTimeout(() => void setDockHoverOpen(true), 60)
-  } else {
-    // Slightly longer leave delay so resize under the cursor doesn't flicker.
-    dockHoverTimer = window.setTimeout(() => void setDockHoverOpen(false), 220)
-  }
 }
 
 function rowWindows(row: AccountQuotaRow): QuotaWindow[] {
@@ -1313,15 +698,6 @@ function lowestRemaining(row: AccountQuotaRow): number | null {
   const windows = rowWindows(row)
   if (!windows.length) return row.remaining_percent ?? null
   return windows.reduce((min, window) => Math.min(min, window.remaining_percent), 100)
-}
-
-function restingMood(): PetMood {
-  const hasLow = poolRows.some((row) => {
-    if (row.status !== 'active') return false
-    const remaining = lowestRemaining(row)
-    return remaining != null && remaining <= 15
-  })
-  return hasLow ? 'alert' : 'idle'
 }
 
 function showToast(message: string, kind: 'normal' | 'error' = 'normal'): void {
@@ -1497,23 +873,31 @@ function renderPool(): void {
   accountList.replaceChildren()
 
   if (!connected) {
-    updatedLabel.textContent = '等待连接'
+    updatedLabel.textContent = '未连接'
     quotaDock.classList.remove('is-low', 'has-data')
     const empty = document.createElement('div')
-    empty.className = 'meter-empty'
-    empty.textContent = '连接后展示账号池'
+    empty.className = 'meter-empty is-clickable'
+    empty.innerHTML = '<span>未连接账号池</span><span class="meter-empty-sub">点击打开设置以登录</span>'
+    empty.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void setSettingsOpen(true)
+    })
     accountList.append(empty)
     void syncTrayMenu()
     return
   }
 
   if (!poolRows.length) {
-    updatedLabel.textContent = '账号池为空'
+    updatedLabel.textContent = '暂无数据'
     quotaDock.classList.remove('is-low')
     quotaDock.classList.add('has-data')
     const empty = document.createElement('div')
-    empty.className = 'meter-empty'
-    empty.textContent = '暂无账号池数据'
+    empty.className = 'meter-empty is-clickable'
+    empty.innerHTML = '<span>暂无账号池数据</span><span class="meter-empty-sub">点击打开设置 / 重新登录</span>'
+    empty.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void setSettingsOpen(true)
+    })
     accountList.append(empty)
     void syncTrayMenu()
     return
@@ -1525,10 +909,14 @@ function renderPool(): void {
     quotaDock.classList.remove('is-low')
     quotaDock.classList.add('has-data')
     const empty = document.createElement('div')
-    empty.className = 'meter-empty'
-    empty.textContent = settings.showModels.claude || settings.showModels.codex || settings.showModels.grok
-      ? '暂无已勾选模型的账号'
-      : '请在设置中勾选要展示的模型'
+    empty.className = 'meter-empty is-clickable'
+    empty.innerHTML = settings.showModels.claude || settings.showModels.codex || settings.showModels.grok
+      ? '<span>暂无已勾选模型的账号</span><span class="meter-empty-sub">点击打开设置</span>'
+      : '<span>请在设置中勾选展示模型</span><span class="meter-empty-sub">点击打开设置</span>'
+    empty.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void setSettingsOpen(true)
+    })
     accountList.append(empty)
     void syncTrayMenu()
     return
@@ -1637,11 +1025,10 @@ async function syncTrayMenu(options?: { refreshing?: boolean }): Promise<void> {
 async function refreshQuota(force: boolean): Promise<void> {
   if (refreshing || !connected) return
   refreshing = true
-  setMood('refreshing')
   // Tooltip-only "syncing" indicator — backend skips full tray menu rebuild for this flag.
   void syncTrayMenu({ refreshing: true })
-  if (force) showSpeechBubble(pickLine(['去查最新额度啦…', '稍等，我刷新一下', '正在同步账号池…']), 2200)
   quotaDock.classList.add('is-refreshing')
+  meterCard.classList.add('is-refreshing')
   try {
     poolRows = isDesktop
       ? await invoke<AccountQuotaRow[]>('refresh_pool_quotas', { force })
@@ -1652,27 +1039,15 @@ async function refreshQuota(force: boolean): Promise<void> {
         }))
     renderPool()
     if (!settingsOpen) await applyWindowSize()
-    setMood('success')
     if (force) {
-      showSpeechBubble(
-        pickLine([
-          `刷新好啦！共 ${poolRows.length} 个账号`,
-          '最新额度已更新～',
-          '查完啦，看看柱状图吧',
-        ]),
-        2800,
-      )
       showToast(`已更新 ${poolRows.length} 个账号额度`)
     }
-    moodTimer = window.setTimeout(() => setMood(restingMood()), 1300)
   } catch (error) {
-    setMood('alert')
-    showSpeechBubble(pickLine(['刷新失败了…', '唔，连不上平台', '稍后再试试吧']), 3000)
     showToast(errorMessage(error), 'error')
-    moodTimer = window.setTimeout(() => setMood(restingMood()), 2200)
   } finally {
     refreshing = false
     quotaDock.classList.remove('is-refreshing')
+    meterCard.classList.remove('is-refreshing')
     // Single menu rebuild after data lands (fingerprint skips no-op rebuilds).
     void syncTrayMenu({ refreshing: false })
   }
@@ -1684,9 +1059,8 @@ function startAutoRefresh(): void {
   autoRefreshTimer = window.setInterval(() => void refreshQuota(false), intervalMs)
 }
 
-function petWindowSize(): { width: number; height: number } {
-  // Fit the transparent window tightly around pet + meters.
-  // Art 144 + gap 4 + card (pad ~19 + meters ~55) + stage padding ~6 + clip buffer 4 ≈ 232.
+function widgetWindowSize(): { width: number; height: number } {
+  // Fit the transparent window tightly around the meter card.
   const rows = visiblePoolRows()
   let content = 8
   for (const row of rows) {
@@ -1695,26 +1069,17 @@ function petWindowSize(): { width: number; height: number } {
     content += count === 1 ? 34 : 42
   }
   content += Math.max(0, rows.length - 1) * 10
-  // Keep at least as wide as the pet artwork.
-  const width = Math.min(420, Math.max(168, content + 12))
-  const height = 234
+  const width = Math.min(420, Math.max(160, content + 24))
+  const height = 82
   return { width, height }
 }
 
 type WindowMode = 'pet' | 'settings'
 
-/** Compact square footprint used when the pet is leaning on a screen edge. */
-const DOCK_SIZE = 48
-
 async function applyWindowSize(_mode?: WindowMode): Promise<void> {
-  if (!isDesktop || animating) return
+  if (!isDesktop) return
   const win = getCurrentWindow()
-  // Settings is a separate OS window — main always stays the pet.
-  if (isDockPeek()) {
-    await win.setSize(new LogicalSize(DOCK_SIZE, DOCK_SIZE))
-    return
-  }
-  const size = petWindowSize()
+  const size = widgetWindowSize()
   await win.setSize(new LogicalSize(size.width, size.height))
 }
 
@@ -1757,22 +1122,15 @@ async function setSettingsOpen(open: boolean): Promise<void> {
   if (!isDesktop) {
     settingsSheet.classList.toggle('is-hidden', !open)
     shell.classList.toggle('has-settings', open)
-    // Do not hide the pet stage.
     shell.classList.remove('pet-hidden')
     if (open) {
-      hideSpeechBubble()
-      window.clearTimeout(idleChatterTimer)
       fillInPageSettingsForm()
       if (!connected) window.setTimeout(() => baseUrlInput.focus(), 120)
-    } else {
-      scheduleIdleChatter()
     }
     return
   }
 
   if (open) {
-    hideSpeechBubble()
-    window.clearTimeout(idleChatterTimer)
     try {
       await invoke('show_settings_window')
     } catch (error) {
@@ -1785,7 +1143,6 @@ async function setSettingsOpen(open: boolean): Promise<void> {
     } catch {
       // already closed
     }
-    scheduleIdleChatter()
   }
 }
 
@@ -1811,8 +1168,7 @@ async function onSettingsChanged(kind: string, payload?: unknown): Promise<void>
     await refreshQuota(true)
     startAutoRefresh()
     await applyWindowSize()
-    scheduleIdleChatter()
-    showSpeechBubble(pickLine(['连接成功～', '账号池已就绪', '我开始盯额度啦']), 2600)
+    showToast('Sub2API 连接成功')
     return
   }
 
@@ -1838,7 +1194,6 @@ async function onSettingsChanged(kind: string, payload?: unknown): Promise<void>
     startAutoRefresh()
     await applyWindowSize()
     if (connected) await refreshQuota(false)
-    scheduleIdleChatter()
   }
 }
 
@@ -1939,14 +1294,10 @@ async function openActionMenu(): Promise<void> {
   if (isWindows) return
   if (!isDesktop) {
     // Browser preview: fall back to in-page settings affordance.
-    showSpeechBubble('桌面版右键可打开独立菜单', 2200)
+    showToast('桌面版右键可打开独立菜单')
     return
   }
-  hideSpeechBubble()
   try {
-    // Backend pops the native menu at the OS cursor (window-relative).
-    // Do not pass screen `cursorPosition` into popup_menu_at — that API is
-    // relative to the window origin, which used to pin the menu far below the pet.
     await invoke('show_action_menu')
   } catch (error) {
     showToast(errorMessage(error), 'error')
@@ -1990,7 +1341,7 @@ async function handleMenuAction(action: string): Promise<void> {
   }
 }
 
-petButton.addEventListener('mousedown', (event) => {
+meterCard.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return
   // Ignore the second mousedown of a double-click (detail >= 2) so OS maximize never arms.
   if (event.detail > 1) {
@@ -2001,27 +1352,24 @@ petButton.addEventListener('mousedown', (event) => {
   dragStarted = false
   pressStartX = event.screenX
   pressStartY = event.screenY
-  // Keep expanded while the user may start a drag from a docked hover.
-  window.clearTimeout(dockHoverTimer)
 })
 window.addEventListener('mousemove', (event) => {
   if (!pressActive || dragStarted || !isDesktop) return
   if (Math.hypot(event.screenX - pressStartX, event.screenY - pressStartY) > 4) {
     dragStarted = true
-    hideSpeechBubble()
     void getCurrentWindow().startDragging()
   }
 })
 window.addEventListener('mouseup', () => {
   if (!pressActive) return
   pressActive = false
-  if (!dragStarted) playReaction()
-  // After a click without drag, re-evaluate hover so dock can collapse if needed.
-  if (dockEdge && !shell.matches(':hover')) scheduleDockHover(false)
+  if (!dragStarted) {
+    void refreshQuota(true)
+  }
 })
 
-// Prevent titlebar-style double-click maximize (borderless pet must stay compact).
-petButton.addEventListener('dblclick', (event) => {
+// Prevent titlebar-style double-click maximize (borderless widget must stay compact).
+meterCard.addEventListener('dblclick', (event) => {
   event.preventDefault()
   event.stopPropagation()
   pressActive = false
@@ -2031,6 +1379,7 @@ petButton.addEventListener('dblclick', (event) => {
     void win.setMaximizable(false)
     void win.unmaximize().catch(() => {})
   }
+  void refreshQuota(true)
 })
 shell.addEventListener('dblclick', (event) => {
   event.preventDefault()
@@ -2040,24 +1389,16 @@ shell.addEventListener('dblclick', (event) => {
   }
 })
 
-// Docked peek ↔ full pet + meters while the pointer is over the window.
-shell.addEventListener('mouseenter', () => {
-  if (dockEdge && !settingsOpen) scheduleDockHover(true)
-})
-shell.addEventListener('mouseleave', () => {
-  if (dockEdge && !settingsOpen && !pressActive) scheduleDockHover(false)
-})
-
-petButton.addEventListener('contextmenu', (event) => {
+meterCard.addEventListener('contextmenu', (event) => {
   event.preventDefault()
   event.stopPropagation()
   // Windows: swallow the event only (no popup). Tray menu remains available.
   if (!isWindows) void openActionMenu()
 })
-petButton.addEventListener('keydown', (event) => {
+meterCard.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
-    playReaction()
+    void refreshQuota(true)
   } else if (
     !isWindows &&
     (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
@@ -2098,27 +1439,6 @@ downloadUpdateButton.addEventListener('click', () => {
   else void checkForUpdate(true)
 })
 
-// Click / keyboard activate the update speech bubble to open the download.
-speechBubble.addEventListener('click', (event) => {
-  if (!pendingUpdateInfo?.available) return
-  event.preventDefault()
-  event.stopPropagation()
-  void openPendingUpdate(false)
-})
-speechBubble.addEventListener('mousedown', (event) => {
-  if (!pendingUpdateInfo?.available) return
-  event.preventDefault()
-  event.stopPropagation()
-})
-speechBubble.addEventListener('keydown', (event) => {
-  if (!pendingUpdateInfo?.available) return
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault()
-    event.stopPropagation()
-    void openPendingUpdate(false)
-  }
-})
-
 if (isDesktop) {
   void listen('open-settings', () => void setSettingsOpen(true))
   void listen('open-admin', () => void handleMenuAction('admin'))
@@ -2133,8 +1453,6 @@ if (isDesktop) {
     // Surface a queued update prompt once the settings window is gone.
     if (pendingUpdateInfo?.available) {
       window.setTimeout(() => showUpdateBubble(pendingUpdateInfo!, true), 280)
-    } else {
-      scheduleIdleChatter()
     }
   })
   void listen<{ kind: string; payload?: unknown }>('settings-changed', (event) => {
@@ -2147,10 +1465,15 @@ async function initialize(): Promise<void> {
   await loadAppVersion()
   if (isDesktop) {
     const win = getCurrentWindow()
-    // Pet is a fixed-size overlay — never allow maximize / fullscreen chrome.
+    // Overlay window — never allow maximize / fullscreen chrome.
     void win.setMaximizable(false)
     void win.unmaximize().catch(() => {})
-    // Check soon after boot so the update bubble can replace the greeting if needed.
+    try {
+      await win.setVisibleOnAllWorkspaces(true)
+    } catch {
+      // ignore if unsupported or permission missing
+    }
+    // Check soon after boot so the update prompt can display if needed.
     window.setTimeout(() => void checkForUpdate(false), 2500)
     startUpdatePolling()
   }
@@ -2166,31 +1489,26 @@ async function initialize(): Promise<void> {
     renderPool()
     await refreshQuota(false)
     await applyWindowSize()
-    window.setTimeout(() => {
-      if (pendingUpdateInfo?.available) {
-        showUpdateBubble(pendingUpdateInfo, true)
-      } else {
-        showSpeechBubble(
-          pickLine([
-            '我在这里盯着额度哦',
-            '点我可以互动～',
-            isWindows ? '托盘图标也能打开菜单哦' : '右键打开菜单哦',
-          ]),
-          3000,
-        )
-      }
-      setMood('happy')
-      moodTimer = window.setTimeout(() => setMood(restingMood()), 1400)
-    }, 600)
+    if (pendingUpdateInfo?.available) {
+      window.setTimeout(() => showUpdateBubble(pendingUpdateInfo!, true), 600)
+    }
   } catch (error) {
-    showToast(errorMessage(error), 'error')
-    if (errorMessage(error).includes('登录')) {
+    const err = errorMessage(error)
+    showToast(err, 'error')
+    const lower = err.toLowerCase()
+    if (
+      lower.includes('登录') ||
+      lower.includes('unauthorized') ||
+      lower.includes('token') ||
+      lower.includes('401') ||
+      lower.includes('keyring')
+    ) {
       connected = false
+      renderPool()
       await setSettingsOpen(true)
     }
   }
   startAutoRefresh()
-  scheduleIdleChatter()
 }
 
 void initialize()

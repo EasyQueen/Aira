@@ -78,7 +78,7 @@ html.is-windows .pet-shell {
 
 .icon-button:focus-visible,
 .input-icon:focus-visible,
-.pet-hitbox:focus-visible,
+.meter-card:focus-visible,
 .primary-button:focus-visible,
 .text-button:focus-visible {
   outline: 3px solid rgba(65, 141, 217, 0.25);
@@ -96,18 +96,16 @@ html.is-windows .pet-shell {
   position: relative;
   display: flex;
   align-items: center;
-  flex-direction: column;
-  justify-content: flex-start;
-  gap: 0;
+  justify-content: center;
   width: 100%;
   height: 100%;
-  padding: 4px 2px 2px;
+  padding: 3px 4px;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
 
-/* Never show native text/image selection on the desktop pet chrome. */
+/* Never show native text/image selection on the desktop widget chrome. */
 .pet-stage *,
 .pet-stage *::before,
 .pet-stage *::after {
@@ -117,260 +115,19 @@ html.is-windows .pet-shell {
   -webkit-user-drag: none;
 }
 
-.pet-hitbox {
-  position: relative;
-  z-index: 6;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  /* Fixed art box; gap to the meter card is controlled by .quota-panel margin-top. */
-  width: 176px;
-  height: 144px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  line-height: 0;
-  background: transparent;
-  cursor: grab;
-  -webkit-app-region: drag;
-  app-region: drag;
-  box-sizing: content-box;
-  outline: none;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.pet-hitbox:active {
-  cursor: grabbing;
-}
-
-/* Comic-style speech bubble for tap / ambient pet dialogue */
-.speech-bubble {
-  position: absolute;
-  top: 4px;
-  left: 50%;
-  z-index: 12;
-  max-width: min(128px, 92%);
-  padding: 5px 8px 6px;
-  border: 1px solid rgba(120, 148, 190, 0.28);
-  border-radius: 12px;
-  color: #2a3d5c;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 6px 16px rgba(45, 70, 110, 0.14);
-  font-size: 10px;
-  font-weight: 650;
-  line-height: 1.35;
-  text-align: center;
-  letter-spacing: 0;
-  opacity: 0;
-  transform: translate(-50%, 8px) scale(0.9);
-  transform-origin: 50% 100%;
-  transition: opacity 180ms ease, transform 200ms cubic-bezier(0.2, 1.2, 0.4, 1);
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
-.speech-bubble::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  bottom: -5px;
-  width: 8px;
-  height: 8px;
-  border-right: 1px solid rgba(120, 148, 190, 0.28);
-  border-bottom: 1px solid rgba(120, 148, 190, 0.28);
-  background: rgba(255, 255, 255, 0.96);
-  transform: translateX(-50%) rotate(45deg);
-}
-
-.speech-bubble.is-visible {
-  opacity: 1;
-  transform: translate(-50%, 0) scale(1);
-}
-
-/* Clickable update prompt — sits above the pet and opens the download. */
-.speech-bubble.is-update {
-  pointer-events: auto;
-  cursor: pointer;
-  border-color: rgba(65, 141, 217, 0.45);
-  color: #1f4f86;
-  background: linear-gradient(165deg, #f4f9ff 0%, #e7f1fc 100%);
-  box-shadow: 0 6px 16px rgba(45, 100, 170, 0.18);
-}
-
-.speech-bubble.is-update::after {
-  border-right-color: rgba(65, 141, 217, 0.45);
-  border-bottom-color: rgba(65, 141, 217, 0.45);
-  background: #eaf3fc;
-}
-
-.speech-bubble.is-update:hover {
-  transform: translate(-50%, -1px) scale(1.03);
-}
-
-.speech-bubble.is-update .speech-text {
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.speech-text {
-  margin: 0;
-  word-break: break-word;
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
-}
-
-.pet-shell.is-docked .speech-bubble {
-  display: none;
-}
-
-.pet-image {
-  display: block;
-  width: auto;
-  height: 144px;
-  max-width: 168px;
-  margin: 0;
-  object-fit: contain;
-  /* Anchor feet to the art box floor so every mood shares the same baseline. */
-  object-position: center bottom;
-  filter: drop-shadow(0 10px 8px rgba(41, 69, 113, 0.14));
-  transform-origin: 50% 92%;
-  pointer-events: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-user-drag: none;
-  -webkit-touch-callout: none;
-  animation: pet-breathe 3.4s ease-in-out infinite;
-}
-
-/* Edge-peek pose: the JS handoff never leaves it visible with the full pet. */
-.pet-peek {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  object-position: center;
-  filter: drop-shadow(0 2px 3px rgba(41, 69, 113, 0.18));
-  opacity: 0;
-  pointer-events: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-user-drag: none;
-  -webkit-touch-callout: none;
-}
-
-[data-mood="refreshing"] .pet-image {
-  animation: pet-refresh 700ms ease-in-out infinite;
-}
-
-[data-mood="success"] .pet-image,
-[data-mood="happy"] .pet-image,
-[data-mood="cute"] .pet-image,
-[data-mood="silly"] .pet-image {
-  /* Keep height identical across moods so the meter baseline never jumps. */
-  animation: pet-pop 420ms cubic-bezier(0.2, 1.4, 0.45, 1) both;
-}
-
-[data-mood="alert"] .pet-image {
-  animation: pet-alert 650ms ease-in-out 2;
-}
-
-/* —— Leaning against a screen edge (docked) —— */
-.pet-shell.is-docked .pet-stage {
-  padding: 0;
-}
-
-.pet-shell.is-docked .pet-hitbox {
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  align-items: stretch;
-  box-sizing: border-box;
-}
-
-/* Only one art layer is visible at a time; stage-level transitions handle mode changes. */
-.pet-shell.is-docked .pet-image {
-  opacity: 0;
-}
-
-.pet-shell.is-docked .pet-peek {
-  opacity: 1;
-  animation: pet-peek 3.6s ease-in-out infinite;
-}
-
-.pet-shell.is-docked[data-dock="top"] .pet-peek {
-  object-position: top center;
-}
-
-.pet-shell.is-docked[data-dock="bottom"] .pet-peek {
-  object-position: bottom center;
-}
-
-.pet-shell.is-docked[data-dock="left"] .pet-peek {
-  object-position: left center;
-}
-
-.pet-shell.is-docked[data-dock="right"] .pet-peek {
-  object-position: right center;
-}
-
-.pet-shell.is-docked .quota-panel {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.pet-shell.is-docked .refresh-orbit {
-  display: none;
-}
-
-.refresh-orbit {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  color: #3479be;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 6px 16px rgba(46, 83, 129, 0.16);
-  opacity: 0;
-  transform: scale(0.7);
-  pointer-events: none;
-}
-
-.refresh-orbit svg {
-  width: 14px;
-  height: 14px;
-}
-
-[data-mood="refreshing"] .refresh-orbit {
-  opacity: 1;
-  transform: scale(1);
-}
-
-[data-mood="refreshing"] .refresh-orbit svg {
-  animation: spin 750ms linear infinite;
-}
-
-/* —— Permanent meter panel (reference widget style) —— */
+/* —— Permanent meter panel (floating widget style) —— */
 .quota-panel {
   position: relative;
   z-index: 5;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 0;
   width: auto;
   max-width: 100%;
-  /* Fixed 4px gap between pet artwork and the frosted meter card. */
-  margin-top: 4px;
-  padding: 0 6px;
+  margin-top: 0;
+  padding: 0;
   border: 0;
   background: transparent;
   opacity: 1;
@@ -386,7 +143,7 @@ html.is-windows .pet-shell {
   align-items: flex-end;
   justify-content: center;
   max-width: 100%;
-  padding: 10px 12px 9px;
+  padding: 10px 14px 9px;
   border: 1px solid rgba(255, 255, 255, var(--meter-card-border, 0.34));
   border-radius: 16px;
   background:
@@ -396,13 +153,40 @@ html.is-windows .pet-shell {
       rgba(244, 248, 255, var(--meter-card-opacity, 0.62)) 55%,
       rgba(236, 242, 252, calc(var(--meter-card-opacity, 0.62) * 0.95)) 100%
     );
-  box-shadow: none;
+  box-shadow: 0 4px 16px rgba(35, 60, 100, 0.08);
   backdrop-filter: blur(var(--meter-card-blur, 12px)) saturate(1.15);
   -webkit-backdrop-filter: blur(var(--meter-card-blur, 12px)) saturate(1.15);
+  cursor: grab;
+  outline: none;
   transition:
     background 160ms ease,
     border-color 160ms ease,
-    backdrop-filter 160ms ease;
+    backdrop-filter 160ms ease,
+    box-shadow 160ms ease,
+    transform 140ms ease;
+}
+
+.meter-card:hover {
+  border-color: rgba(255, 255, 255, calc(var(--meter-card-border, 0.34) + 0.22));
+  box-shadow: 0 6px 20px rgba(35, 60, 100, 0.14);
+}
+
+.meter-card:active {
+  cursor: grabbing;
+}
+
+.meter-card.is-refreshing {
+  border-color: rgba(65, 141, 217, 0.6);
+  animation: meter-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes meter-pulse {
+  from {
+    box-shadow: 0 2px 10px rgba(65, 141, 217, 0.15);
+  }
+  to {
+    box-shadow: 0 4px 20px rgba(65, 141, 217, 0.38);
+  }
 }
 
 .meter-card::before {
@@ -438,10 +222,29 @@ html.is-windows .pet-shell {
 
 .meter-empty {
   min-width: 160px;
-  padding: 18px 12px;
+  padding: 16px 12px;
   color: #9aa5b6;
   font-size: 11px;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.meter-empty.is-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+.meter-empty.is-clickable:hover {
+  color: #6366f1;
+}
+
+.meter-empty-sub {
+  font-size: 10px;
+  color: #818cf8;
 }
 
 .meter-group {
@@ -1157,33 +960,6 @@ h1 {
 
 .is-hidden {
   display: none !important;
-}
-
-@keyframes pet-breathe {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-3px) scale(1.006); }
-}
-
-@keyframes pet-refresh {
-  0%, 100% { transform: translateY(0) rotate(-1deg); }
-  50% { transform: translateY(-5px) rotate(1deg); }
-}
-
-/* Pop without sinking: a downward translate would cover the meter bars. */
-@keyframes pet-pop {
-  0% { transform: scale(0.9) translateY(-2px); opacity: 0.35; }
-  100% { transform: scale(1) translateY(0); opacity: 1; }
-}
-
-@keyframes pet-alert {
-  0%, 100% { transform: translateX(0); }
-  35% { transform: translateX(-4px) rotate(-1deg); }
-  70% { transform: translateX(4px) rotate(1deg); }
-}
-
-@keyframes pet-peek {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-2px) scale(1.01); }
 }
 
 @keyframes spin {

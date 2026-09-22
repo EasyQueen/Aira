@@ -37,6 +37,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSApplication",
+    "NSColor",
     "NSControl",
     "NSCustomTouchBarItem",
     "NSResponder",
@@ -46,5 +47,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSTouchBar",
     "NSTouchBarItem",
     "NSView",
+    "NSWindow",
 ] }
 

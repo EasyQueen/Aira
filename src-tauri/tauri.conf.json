@@ -16,14 +16,15 @@
         "label": "main",
         "title": "Sub2API Pet",
         "width": 200,
-        "height": 210,
-        "minWidth": 48,
-        "minHeight": 48,
+        "height": 84,
+        "minWidth": 100,
+        "minHeight": 60,
         "resizable": false,
         "maximizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
         "shadow": false,
         "center": true
@@ -45,7 +46,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    }
   },
   "plugins": {
     "updater": {
