@@ -1,7 +1,7 @@
 //! Native macOS Touch Bar showing the account-pool quota.
 //!
 //! macOS reflects the Touch Bar of the **frontmost app only**, so this is
-//! visible whenever Sub2API Pet is the active app (e.g. after clicking the pet
+//! visible whenever Aira is the active app (e.g. after clicking the pet
 //! or interacting with it). It is intentionally *not* an always-on widget —
 //! that is an OS-level restriction, not something an accessory app can override.
 
@@ -54,7 +54,7 @@ pub(super) fn setup() {
     let status_id = NSString::from_str("com.sub2api.pet.touchbar.status");
     let status_item =
         NSCustomTouchBarItem::initWithIdentifier(NSCustomTouchBarItem::alloc(mtm), &status_id);
-    let status_label = NSTextField::labelWithString(&NSString::from_str("Sub2API Pet"), mtm);
+    let status_label = NSTextField::labelWithString(&NSString::from_str("Aira"), mtm);
     status_item.setView(&status_label);
 
     let touch_bar = NSTouchBar::new(mtm);
@@ -64,7 +64,7 @@ pub(super) fn setup() {
         status_item.into_super(),
     ]));
 
-    // Show this Touch Bar whenever Sub2API Pet is the active app.
+    // Show this Touch Bar whenever Aira is the active app.
     NSApplication::sharedApplication(mtm).setTouchBar(Some(&touch_bar));
 
     TOUCH_BAR.with(|cell| {

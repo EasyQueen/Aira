@@ -1,8 +1,8 @@
 [package]
-name = "sub2api-pet"
+name = "aira"
 version = "0.1.5"
 description = "Always-on-top Codex weekly quota companion for Sub2API"
-authors = ["Sub2API Pet"]
+authors = ["Aira"]
 edition = "2021"
 
 [lib]
@@ -49,4 +49,3 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSView",
     "NSWindow",
 ] }
-

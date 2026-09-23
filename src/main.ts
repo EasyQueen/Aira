@@ -1,7 +1,7 @@
 import './style.css'
 import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
-import { LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
+import { LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
 import { listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
@@ -95,7 +95,7 @@ const defaultSettings: PetSettings = {
   maxDisplayAccounts: 5,
   refreshIntervalSec: 30,
   showModels: { ...defaultShowModels },
-  cardOpacity: 0.62,
+  cardOpacity: 1.0,
 }
 
 const DISPLAY_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 15, 20] as const
@@ -121,6 +121,28 @@ let moveSaveTimer: number | undefined
 let snapping = false
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
+  <svg class="svg-defs" aria-hidden="true" style="position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none;">
+    <defs>
+      <!-- 5-Hour Session Quota (Left semi-circle across all models): High-light #4FA3FF -->
+      <linearGradient id="gradient-quota-5h" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#72b8ff" />
+        <stop offset="100%" stop-color="#4FA3FF" />
+      </linearGradient>
+
+      <!-- 7-Day Weekly Quota (Right semi-circle & full circle across all models): High-light #4FA3FF -->
+      <linearGradient id="gradient-quota-7d" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#72b8ff" />
+        <stop offset="100%" stop-color="#4FA3FF" />
+      </linearGradient>
+
+      <!-- Alert / Low Quota Gradient (<= 15%) -->
+      <linearGradient id="gradient-alert" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#f87171" />
+        <stop offset="100%" stop-color="#dc2626" />
+      </linearGradient>
+    </defs>
+  </svg>
+
   <main class="pet-shell" id="pet-shell">
     <section class="pet-stage" aria-live="polite">
       <div class="quota-panel" id="quota-dock" aria-label="账号池额度面板">
@@ -129,9 +151,12 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           id="meter-card"
           role="button"
           tabindex="0"
-          aria-label="${isWindows ? '单击刷新，按住拖动' : '单击刷新，右键打开菜单，按住拖动'}"
-          title="${isWindows ? '单击刷新 · 按住拖动' : '单击刷新 · 右键菜单 · 按住拖动'}"
+          aria-label="${isWindows ? '单击刷新 · 上下拖动调整位置' : '单击刷新 · 上下拖动调整位置 · 右键打开菜单'}"
+          title="${isWindows ? '单击刷新 · 上下拖动调整位置' : '单击刷新 · 上下拖动调整位置 · 右键菜单'}"
         >
+          <svg class="dock-backdrop-svg" id="dock-backdrop-svg" aria-hidden="true" focusable="false">
+            <path class="dock-backdrop-path" id="dock-backdrop-path" />
+          </svg>
           <div class="meter-board" id="account-list" role="list"></div>
         </div>
         <span class="visually-hidden" id="updated-label">尚未同步</span>
@@ -144,7 +169,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <div class="settings-scroll">
           <header class="sheet-header">
             <div>
-              <span class="eyebrow">SUB2API PET</span>
+              <span class="eyebrow">AIRA</span>
               <h1>账号池额度</h1>
             </div>
           </header>
@@ -188,12 +213,12 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
                   <span><strong>Claude</strong><small>Anthropic</small></span>
                 </label>
                 <label class="model-check">
-                  <input id="show-codex" type="checkbox" checked />
-                  <span><strong>Codex</strong><small>OpenAI</small></span>
-                </label>
-                <label class="model-check">
                   <input id="show-grok" type="checkbox" checked />
                   <span><strong>Grok</strong><small>xAI</small></span>
+                </label>
+                <label class="model-check">
+                  <input id="show-codex" type="checkbox" checked />
+                  <span><strong>Codex</strong><small>OpenAI</small></span>
                 </label>
               </div>
               <small class="field-hint">默认三项全开；取消勾选后对应账号不在宠物与托盘中展示</small>
@@ -240,7 +265,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
             <div class="about-head">
               <div class="about-title">
                 <span class="about-eyebrow">关于应用</span>
-                <strong>Sub2API Pet</strong>
+                <strong>Aira</strong>
               </div>
               <div class="about-version" title="当前安装版本">
                 <span class="about-version-label">当前版本</span>
@@ -525,13 +550,8 @@ function cardOpacityPercent(opacity: number = settings.cardOpacity): number {
 function applyCardOpacity(opacity: number = settings.cardOpacity): void {
   const alpha = clampCardOpacity(opacity)
   shell.style.setProperty('--meter-card-opacity', String(alpha))
-  // Soften border / blur with the same knob so 0% truly disappears (no drop shadow).
-  shell.style.setProperty('--meter-card-border', String(Math.min(0.45, alpha * 0.55)))
-  // Skip backdrop blur on Windows — WebView2 transparent composition is too expensive.
-  shell.style.setProperty(
-    '--meter-card-blur',
-    isWindows ? '0px' : `${Math.round(4 + alpha * 14)}px`,
-  )
+  shell.style.setProperty('--meter-card-border', String(Math.min(0.45, Math.max(0.16, alpha * 0.55))))
+  shell.style.setProperty('--meter-card-blur', '0px')
 }
 
 function normalizeShowModels(raw: unknown): ModelVisibility {
@@ -612,9 +632,26 @@ function refreshHintText(): string {
   return `每 ${sec} 秒自动同步`
 }
 
+function platformSortRank(platform?: string | null): number {
+  const model = modelKeyForPlatform(platform)
+  if (model === 'claude') return 0
+  if (model === 'grok') return 1
+  return 2
+}
+
 function visiblePoolRows(): AccountQuotaRow[] {
   const limit = clampDisplayAccounts(settings.maxDisplayAccounts)
-  return poolRows.filter((row) => isModelEnabled(row.platform)).slice(0, limit)
+  return poolRows
+    .filter((row) => isModelEnabled(row.platform))
+    .slice()
+    .sort((a, b) => {
+      const activeDiff = (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1)
+      if (activeDiff !== 0) return activeDiff
+      const rankDiff = platformSortRank(a.platform) - platformSortRank(b.platform)
+      if (rankDiff !== 0) return rankDiff
+      return a.name.localeCompare(b.name)
+    })
+    .slice(0, limit)
 }
 
 populateSettingSelects()
@@ -653,17 +690,7 @@ async function saveSettings(): Promise<void> {
 
 async function registerPositionPersistence(): Promise<void> {
   if (!isDesktop) return
-  const appWindow = getCurrentWindow()
-  if (Number.isFinite(settings.windowX) && Number.isFinite(settings.windowY)) {
-    await appWindow.setPosition(new PhysicalPosition(settings.windowX!, settings.windowY!))
-  }
-  await appWindow.onMoved(({ payload }) => {
-    if (snapping || settingsOpen) return
-    settings.windowX = payload.x
-    settings.windowY = payload.y
-    window.clearTimeout(moveSaveTimer)
-    moveSaveTimer = window.setTimeout(() => void saveSettings(), 200)
-  })
+  await anchorWindowToRight()
 }
 
 function formatClock(value: string): string {
@@ -734,25 +761,19 @@ function mockPoolRows(): AccountQuotaRow[] {
       source: 'cached',
     },
     {
-      id: 22,
-      name: 'Claude 备用',
+      id: 31,
+      name: 'Grok 主账号',
       status: 'active',
-      plan: 'pro',
-      platform: 'anthropic',
-      account_type: 'oauth',
-      remaining_percent: 45,
+      plan: 'super',
+      platform: 'xai',
+      account_type: 'api_key',
+      remaining_percent: 72,
       windows: [
         {
-          label: '5h',
-          used_percent: 55,
-          remaining_percent: 45,
-          reset_at: new Date(Date.now() + 1.2 * 3600000).toISOString(),
-        },
-        {
           label: '7d',
-          used_percent: 24,
-          remaining_percent: 76,
-          reset_at: new Date(Date.now() + 3.2 * 86400000).toISOString(),
+          used_percent: 28,
+          remaining_percent: 72,
+          reset_at: new Date(Date.now() + 2.5 * 86400000).toISOString(),
         },
       ],
       updated_at: new Date().toISOString(),
@@ -768,29 +789,16 @@ function mockPoolRows(): AccountQuotaRow[] {
       remaining_percent: 60,
       windows: [
         {
-          label: '7d',
+          label: '5h',
           used_percent: 40,
           remaining_percent: 60,
-          reset_at: new Date(Date.now() + 3.4 * 86400000).toISOString(),
+          reset_at: new Date(Date.now() + 1.8 * 3600000).toISOString(),
         },
-      ],
-      updated_at: new Date().toISOString(),
-      source: 'cached',
-    },
-    {
-      id: 31,
-      name: 'Grok 主账号',
-      status: 'active',
-      plan: 'super',
-      platform: 'xai',
-      account_type: 'api_key',
-      remaining_percent: 72,
-      windows: [
         {
           label: '7d',
-          used_percent: 28,
-          remaining_percent: 72,
-          reset_at: new Date(Date.now() + 2.5 * 86400000).toISOString(),
+          used_percent: 25,
+          remaining_percent: 75,
+          reset_at: new Date(Date.now() + 3.4 * 86400000).toISOString(),
         },
       ],
       updated_at: new Date().toISOString(),
@@ -814,59 +822,168 @@ function latestUpdatedAt(): string | null {
   return latestIso
 }
 
-function toneForWindow(platform: string | undefined, index: number, total: number): string {
-  const model = modelKeyForPlatform(platform)
-  if (model === 'claude') {
-    return index === 0 && total > 1 ? 'amber' : 'violet'
-  }
-  if (model === 'grok') return 'amber'
-  return 'violet'
+interface ModelIconInfo {
+  path: string
+  viewBox: string
 }
 
-const MODEL_ICON_PATHS: Record<ModelKey, string> = {
-  grok: 'M395.47591 633.831048L735.904251 381.110023c16.68887-12.389903 40.543683-7.556941 48.495621 11.686908 41.853673 101.492207 23.154819 223.459254-60.11753 307.2016-83.271349 83.742346-199.135444 102.107202-305.038617 60.280529l-115.690097 53.865579c165.932704 114.058109 367.428129 85.851329 493.341146-40.86068 99.87422-100.438215 130.805978-237.343146 101.883204-360.803182l0.261998 0.262998C857.098304 231.376192 909.350896 158.880759 1016.392059 10.640917c2.52998-3.514973 5.06996-7.029945 7.599941-10.632917L883.1371 141.657893v-0.438996L395.388911 633.919048M325.223459 695.253568c-119.09707-114.410106-98.56323-291.472723 3.058976-393.579925 75.145413-75.57041 198.262451-106.413169 305.738612-61.071523l115.427098-53.601581c-20.796838-15.113882-47.446629-31.370755-78.02939-42.793666-138.23292-57.205553-303.728627-28.734776-416.09775 84.181343-108.088156 108.698151-142.07789 275.830845-83.709346 418.447731 43.602659 106.589167-27.873782 181.983578-99.873219 258.080983C46.223639 931.89372 20.621839 958.870509 0 987.429286l325.13646-292.087718',
-  codex: 'M904.533333 435.285333c-2.730667-3.328-3.456-5.973333-2.218666-9.898666 10.197333-32.426667 13.013333-65.365333 7.466666-99.029334a220.501333 220.501333 0 0 0-83.413333-142.293333c-53.632-42.197333-115.029333-57.258667-182.741333-46.122667-6.4 1.024-10.24-0.725333-14.72-5.12-57.685333-57.301333-127.872-79.402667-207.573334-64.085333-84.522667 16.085333-142.506667 66.304-173.056 146.304-1.450667 3.669333-3.029333 5.674667-7.552 6.741333-52.309333 12.373333-95.701333 38.912-128.341333 81.194667-41.557333 54.058667-56.746667 114.773333-44.032 181.845333a216.618667 216.618667 0 0 0 50.346667 102.912c3.541333 4.096 4.138667 7.594667 2.56 12.501334-6.997333 20.565333-9.216 41.941333-9.770667 63.872 0.64 15.957333 1.706667 32.298667 5.546667 48.213333 27.178667 119.04 144.768 195.584 266.282666 173.269333 4.864-0.768 7.168 0.256 10.197334 3.413334 57.941333 58.837333 128.768 81.834667 209.706666 66.261333 84.608-16.213333 142.08-67.029333 172.885334-146.773333 1.408-3.584 2.986667-5.248 6.997333-6.186667 96.426667-21.973333 167.509333-102.826667 175.829333-200.106667 5.845333-62.592-12.757333-118.698667-54.4-166.912z m-55.210666-110.421333c3.882667 18.901333 5.12 37.802667 2.730666 56.96-0.256 2.176-0.981333 4.266667-1.578666 7.253333l-49.621334-28.245333c-43.52-24.874667-87.210667-49.493333-130.56-74.752a37.461333 37.461333 0 0 0-41.386666 0.085333c-66.304 38.357333-132.949333 75.946667-199.424 113.877334-2.133333 1.109333-3.882667 3.029333-7.253334 2.773333V318.037333c0-3.157333 2.048-4.138667 4.181334-5.418666 59.178667-33.706667 117.845333-68.437333 177.664-100.821334 97.493333-52.693333 222.976 5.76 245.248 113.066667z m-247.808 186.368c0 15.488-0.085333 30.890667 0.085333 46.293333 0 3.584-0.981333 5.717333-4.352 7.552-27.178667 15.317333-54.186667 30.805333-81.152 46.464-2.986667 1.664-5.12 1.834667-8.277333 0.085334-26.88-15.573333-54.016-31.061333-81.152-46.378667-3.541333-2.005333-4.608-4.266667-4.608-8.234667 0.170667-30.122667 0.170667-60.16 0-90.24 0-4.181333 1.237333-6.528 5.034666-8.746666 26.496-14.933333 52.906667-29.994667 79.232-45.226667 3.925333-2.176 6.741333-2.56 10.922667-0.170667 26.325333 15.317333 52.650667 30.378667 79.146667 45.312 3.712 2.133333 5.205333 4.394667 5.205333 8.661334-0.256 14.805333-0.085333 29.781333-0.085333 44.629333zM293.802667 294.4c0.085333-84.608 54.784-152.618667 138.709333-169.258667 51.584-10.026667 98.730667 2.986667 141.354667 36.053334l-69.12 39.253333c-38.314667 21.76-76.586667 43.733333-115.029334 65.322667a32 32 0 0 0-17.578666 30.464v236.970666c-2.645333 0.725333-4.138667-1.237333-5.930667-2.176-22.186667-12.501333-44.202667-25.386667-66.474667-37.632-4.608-2.56-5.930667-5.546667-5.930666-10.496 0.085333-62.848 0-125.653333 0-188.501333z m-169.514667 163.882667c-8.362667-72.96 37.290667-147.2 106.666667-172.8 1.152-0.341333 2.304-0.64 3.925333-0.981334V336.213333c0 51.626667 0.170667 103.253333 0 154.88-0.170667 15.146667 5.930667 25.6 19.413333 33.194667 67.072 37.717333 133.973333 76.032 200.832 114.090667l6.442667 3.84-74.24 42.453333c-2.56 1.493333-4.522667 2.133333-7.466667 0.341333-59.989333-34.389333-120.789333-67.2-179.626666-103.168-45.653333-27.818667-70.016-70.613333-75.946667-123.562666z m74.965333 297.898666a166.229333 166.229333 0 0 1-25.344-121.130666l11.776 6.4c56.917333 32.469333 113.92 64.938667 170.794667 97.578666a33.962667 33.962667 0 0 0 36.693333 0c67.797333-38.784 135.68-77.44 203.477334-116.053333l5.034666-2.773333c0 29.141333 0 57.130667 0.170667 85.12 0 3.413333-1.664 4.821333-4.138667 6.229333-58.581333 33.152-116.565333 67.413333-175.829333 99.413333-77.397333 41.472-173.994667 17.664-222.634667-54.784z m530.346667-12.074666c-1.706667 60.458667-41.045333 120.149333-107.776 146.346666a172.373333 172.373333 0 0 1-170.666667-28.032l80.426667-45.781333c34.218667-19.498667 68.352-39.210667 102.741333-58.368a31.274667 31.274667 0 0 0 17.536-30.165333c-0.256-76.672-0.085333-153.344-0.085333-230.144 0-8.405333 0-8.405333 7.168-4.48 22.058667 12.586667 44.16 25.301333 66.304 37.717333 3.541333 2.005333 4.949333 4.010667 4.864 8.106667-0.085333 68.181333 1.322667 136.533333-0.512 204.8z m68.266667-7.68c-8.832 3.754667-8.832 3.754667-8.832-5.632 0-66.56-0.256-133.162667 0.213333-199.68a32.426667 32.426667 0 0 0-18.261333-31.317334c-66.218667-37.461333-132.266667-75.264-198.357334-112.896l-10.112-5.888 75.178667-42.752c2.645333-1.578667 4.522667-0.725333 6.826667 0.512 59.349333 33.962667 119.381333 66.688 177.834666 101.76 44.672 26.965333 69.973333 67.84 76.928 119.168A167.125333 167.125333 0 0 1 797.866667 736.426667z',
-  claude: 'M252.8 652.8l167.89504-94.29504 2.76992-8.10496-2.76992-4.48h-8.11008l-28.16-1.70496-96-2.56-83.2-3.41504-80.64-4.26496-20.26496-4.27008-18.98496-24.96 1.92-12.58496 17.06496-11.52 24.32 2.13504L182.61504 486.4 263.68 491.94496l58.66496 3.41504 87.04 9.17504h13.87008l1.92-5.55008-4.69504-3.40992-3.62496-3.41504-83.84-56.74496-90.67008-60.16-47.56992-34.56L168.96 323.2l-13.01504-16.42496-5.54496-35.84 23.25504-25.81504 31.36 2.13504 7.88992 2.12992 31.79008 24.32 67.84 52.48 88.52992 65.28 13.01504 10.88 5.12-3.62496 0.64-2.56-5.76-9.81504-48.21504-87.04-51.40992-88.52992L291.62496 174.08l-5.96992-21.97504a107.85792 107.85792 0 0 1-3.63008-26.02496l26.67008-36.05504 14.72-4.68992 35.40992 4.68992L373.76 103.04l21.97504 50.34496 35.62496 79.36L486.61504 340.48l16.20992 32 8.75008 29.65504 3.2 9.16992h5.54496v-5.12l4.48-60.8 8.32-74.44992 8.10496-96 2.77504-27.09504 13.44-32.42496 26.66496-17.49504 20.69504 10.02496 17.06496 24.32-2.34496 15.79008-10.24 65.92-19.84 103.24992-13.01504 69.12h7.47008l8.74496-8.74496 34.98496-46.50496 58.67008-73.39008 26.02496-29.22496 30.29504-32.21504 19.40992-15.36H798.72l27.09504 40.11008-12.16 41.38496-37.76 48-31.36 40.53504-45.01504 60.58496-28.16 48.42496 2.56 3.84 6.61504-0.64 101.54496-21.54496 54.82496-10.02496 65.49504-11.31008 29.65504 13.87008 3.2 14.08-11.73504 28.8-69.97504 17.28-82.12992 16.42496-122.24 29.01504-1.49504 1.06496 1.70496 2.13504 55.04 5.12 23.47008 1.28h57.6l107.30496 7.88992 28.16 18.56 16.85504 22.61504-2.77504 17.28-43.30496 21.97504-58.24-13.87008-136.11008-32.42496-46.72-11.73504h-6.4v3.84l38.83008 37.97504 71.24992 64.42496 89.17504 82.99008 4.48 20.48-11.52 16.20992L824.32 803.84l-78.50496-58.88-30.29504-26.66496-68.48-57.6h-4.48v5.96992l15.78496 23.04 83.41504 125.23008 4.26496 38.4-5.96992 12.58496-21.55008 7.46496-23.68-4.26496-48.84992-68.48-50.35008-77.22496-40.52992-69.12-4.91008 2.76992-23.88992 258.13504-11.31008 13.22496-26.02496 10.03008-21.54496-16.43008-11.52-26.66496 11.52-52.48L481.28 774.4l11.30496-54.4 10.24-67.62496 5.97504-22.4-0.42496-1.49504-4.91008 0.64-50.98496 69.97504L374.82496 803.84l-61.44 65.70496-14.72 5.76-25.38496-13.22496 2.34496-23.46496 14.29504-20.91008 84.90496-107.94496 51.2-66.98496L459.09504 604.16v-5.54496h-2.13504l-225.49504 146.56-40.10496 5.12L174.08 734.08l2.13504-26.66496L184.32 698.66496l67.84-46.72h-0.21504l0.85504 0.85504z',
+const MODEL_ICON_PATHS: Record<ModelKey, ModelIconInfo> = {
+  grok: {
+    path: 'M13.2371 21.0407L24.3186 12.8506C24.8619 12.4491 25.6384 12.6057 25.8973 13.2294C27.2597 16.5185 26.651 20.4712 23.9403 23.1851C21.2297 25.8989 17.4581 26.4941 14.0108 25.1386L10.2449 26.8843C15.6463 30.5806 22.2053 29.6665 26.304 25.5601C29.5551 22.3051 30.562 17.8683 29.6205 13.8673L29.629 13.8758C28.2637 7.99809 29.9647 5.64871 33.449 0.844576C33.5314 0.730667 33.6139 0.616757 33.6964 0.5L29.1113 5.09055V5.07631L13.2343 21.0436M10.9503 23.0313C7.07343 19.3235 7.74185 13.5853 11.0498 10.2763C13.4959 7.82722 17.5036 6.82767 21.0021 8.2971L24.7595 6.55998C24.0826 6.07017 23.215 5.54334 22.2195 5.17313C17.7198 3.31926 12.3326 4.24192 8.67479 7.90126C5.15635 11.4239 4.0499 16.8403 5.94992 21.4622C7.36924 24.9165 5.04257 27.3598 2.69884 29.826C1.86829 30.7002 1.0349 31.5745 0.36364 32.5L10.9474 23.0341',
+    viewBox: '0 0 34 33',
+  },
+  codex: {
+    path: 'M904.533333 435.285333c-2.730667-3.328-3.456-5.973333-2.218666-9.898666 10.197333-32.426667 13.013333-65.365333 7.466666-99.029334a220.501333 220.501333 0 0 0-83.413333-142.293333c-53.632-42.197333-115.029333-57.258667-182.741333-46.122667-6.4 1.024-10.24-0.725333-14.72-5.12-57.685333-57.301333-127.872-79.402667-207.573334-64.085333-84.522667 16.085333-142.506667 66.304-173.056 146.304-1.450667 3.669333-3.029333 5.674667-7.552 6.741333-52.309333 12.373333-95.701333 38.912-128.341333 81.194667-41.557333 54.058667-56.746667 114.773333-44.032 181.845333a216.618667 216.618667 0 0 0 50.346667 102.912c3.541333 4.096 4.138667 7.594667 2.56 12.501334-6.997333 20.565333-9.216 41.941333-9.770667 63.872 0.64 15.957333 1.706667 32.298667 5.546667 48.213333 27.178667 119.04 144.768 195.584 266.282666 173.269333 4.864-0.768 7.168 0.256 10.197334 3.413334 57.941333 58.837333 128.768 81.834667 209.706666 66.261333 84.608-16.213333 142.08-67.029333 172.885334-146.773333 1.408-3.584 2.986667-5.248 6.997333-6.186667 96.426667-21.973333 167.509333-102.826667 175.829333-200.106667 5.845333-62.592-12.757333-118.698667-54.4-166.912z m-55.210666-110.421333c3.882667 18.901333 5.12 37.802667 2.730666 56.96-0.256 2.176-0.981333 4.266667-1.578666 7.253333l-49.621334-28.245333c-43.52-24.874667-87.210667-49.493333-130.56-74.752a37.461333 37.461333 0 0 0-41.386666 0.085333c-66.304 38.357333-132.949333 75.946667-199.424 113.877334-2.133333 1.109333-3.882667 3.029333-7.253334 2.773333V318.037333c0-3.157333 2.048-4.138667 4.181334-5.418666 59.178667-33.706667 117.845333-68.437333 177.664-100.821334 97.493333-52.693333 222.976 5.76 245.248 113.066667z m-247.808 186.368c0 15.488-0.085333 30.890667 0.085333 46.293333 0 3.584-0.981333 5.717333-4.352 7.552-27.178667 15.317333-54.186667 30.805333-81.152 46.464-2.986667 1.664-5.12 1.834667-8.277333 0.085334-26.88-15.573333-54.016-31.061333-81.152-46.378667-3.541333-2.005333-4.608-4.266667-4.608-8.234667 0.170667-30.122667 0.170667-60.16 0-90.24 0-4.181333 1.237333-6.528 5.034666-8.746666 26.496-14.933333 52.906667-29.994667 79.232-45.226667 3.925333-2.176 6.741333-2.56 10.922667-0.170667 26.325333 15.317333 52.650667 30.378667 79.146667 45.312 3.712 2.133333 5.205333 4.394667 5.205333 8.661334-0.256 14.805333-0.085333 29.781333-0.085333 44.629333zM293.802667 294.4c0.085333-84.608 54.784-152.618667 138.709333-169.258667 51.584-10.026667 98.730667 2.986667 141.354667 36.053334l-69.12 39.253333c-38.314667 21.76-76.586667 43.733333-115.029334 65.322667a32 32 0 0 0-17.578666 30.464v236.970666c-2.645333 0.725333-4.138667-1.237333-5.930667-2.176-22.186667-12.501333-44.202667-25.386667-66.474667-37.632-4.608-2.56-5.930667-5.546667-5.930666-10.496 0.085333-62.848 0-125.653333 0-188.501333z m-169.514667 163.882667c-8.362667-72.96 37.290667-147.2 106.666667-172.8 1.152-0.341333 2.304-0.64 3.925333-0.981334V336.213333c0 51.626667 0.170667 103.253333 0 154.88-0.170667 15.146667 5.930667 25.6 19.413333 33.194667 67.072 37.717333 133.973333 76.032 200.832 114.090667l6.442667 3.84-74.24 42.453333c-2.56 1.493333-4.522667 2.133333-7.466667 0.341333-59.989333-34.389333-120.789333-67.2-179.626666-103.168-45.653333-27.818667-70.016-70.613333-75.946667-123.562666z m74.965333 297.898666a166.229333 166.229333 0 0 1-25.344-121.130666l11.776 6.4c56.917333 32.469333 113.92 64.938667 170.794667 97.578666a33.962667 33.962667 0 0 0 36.693333 0c67.797333-38.784 135.68-77.44 203.477334-116.053333l5.034666-2.773333c0 29.141333 0 57.130667 0.170667 85.12 0 3.413333-1.664 4.821333-4.138667 6.229333-58.581333 33.152-116.565333 67.413333-175.829333 99.413333-77.397333 41.472-173.994667 17.664-222.634667-54.784z m530.346667-12.074666c-1.706667 60.458667-41.045333 120.149333-107.776 146.346666a172.373333 172.373333 0 0 1-170.666667-28.032l80.426667-45.781333c34.218667-19.498667 68.352-39.210667 102.741333-58.368a31.274667 31.274667 0 0 0 17.536-30.165333c-0.256-76.672-0.085333-153.344-0.085333-230.144 0-8.405333 0-8.405333 7.168-4.48 22.058667 12.586667 44.16 25.301333 66.304 37.717333 3.541333 2.005333 4.949333 4.010667 4.864 8.106667-0.085333 68.181333 1.322667 136.533333-0.512 204.8z m68.266667-7.68c-8.832 3.754667-8.832 3.754667-8.832-5.632 0-66.56-0.256-133.162667 0.213333-199.68a32.426667 32.426667 0 0 0-18.261333-31.317334c-66.218667-37.461333-132.266667-75.264-198.357334-112.896l-10.112-5.888 75.178667-42.752c2.645333-1.578667 4.522667-0.725333 6.826667 0.512 59.349333 33.962667 119.381333 66.688 177.834666 101.76 44.672 26.965333 69.973333 67.84 76.928 119.168A167.125333 167.125333 0 0 1 797.866667 736.426667z',
+    viewBox: '0 0 1024 1024',
+  },
+  claude: {
+    path: 'M252.8 652.8l167.89504-94.29504 2.76992-8.10496-2.76992-4.48h-8.11008l-28.16-1.70496-96-2.56-83.2-3.41504-80.64-4.26496-20.26496-4.27008-18.98496-24.96 1.92-12.58496 17.06496-11.52 24.32 2.13504L182.61504 486.4 263.68 491.94496l58.66496 3.41504 87.04 9.17504h13.87008l1.92-5.55008-4.69504-3.40992-3.62496-3.41504-83.84-56.74496-90.67008-60.16-47.56992-34.56L168.96 323.2l-13.01504-16.42496-5.54496-35.84 23.25504-25.81504 31.36 2.13504 7.88992 2.12992 31.79008 24.32 67.84 52.48 88.52992 65.28 13.01504 10.88 5.12-3.62496 0.64-2.56-5.76-9.81504-48.21504-87.04-51.40992-88.52992L291.62496 174.08l-5.96992-21.97504a107.85792 107.85792 0 0 1-3.63008-26.02496l26.67008-36.05504 14.72-4.68992 35.40992 4.68992L373.76 103.04l21.97504 50.34496 35.62496 79.36L486.61504 340.48l16.20992 32 8.75008 29.65504 3.2 9.16992h5.54496v-5.12l4.48-60.8 8.32-74.44992 8.10496-96 2.77504-27.09504 13.44-32.42496 26.66496-17.49504 20.69504 10.02496 17.06496 24.32-2.34496 15.79008-10.24 65.92-19.84 103.24992-13.01504 69.12h7.47008l8.74496-8.74496 34.98496-46.50496 58.67008-73.39008 26.02496-29.22496 30.29504-32.21504 19.40992-15.36H798.72l27.09504 40.11008-12.16 41.38496-37.76 48-31.36 40.53504-45.01504 60.58496-28.16 48.42496 2.56 3.84 6.61504-0.64 101.54496-21.54496 54.82496-10.02496 65.49504-11.31008 29.65504 13.87008 3.2 14.08-11.73504 28.8-69.97504 17.28-82.12992 16.42496-122.24 29.01504-1.49504 1.06496 1.70496 2.13504 55.04 5.12 23.47008 1.28h57.6l107.30496 7.88992 28.16 18.56 16.85504 22.61504-2.77504 17.28-43.30496 21.97504-58.24-13.87008-136.11008-32.42496-46.72-11.73504h-6.4v3.84l38.83008 37.97504 71.24992 64.42496 89.17504 82.99008 4.48 20.48-11.52 16.20992L824.32 803.84l-78.50496-58.88-30.29504-26.66496-68.48-57.6h-4.48v5.96992l15.78496 23.04 83.41504 125.23008 4.26496 38.4-5.96992 12.58496-21.55008 7.46496-23.68-4.26496-48.84992-68.48-50.35008-77.22496-40.52992-69.12-4.91008 2.76992-23.88992 258.13504-11.31008 13.22496-26.02496 10.03008-21.54496-16.43008-11.52-26.66496 11.52-52.48L481.28 774.4l11.30496-54.4 10.24-67.62496 5.97504-22.4-0.42496-1.49504-4.91008 0.64-50.98496 69.97504L374.82496 803.84l-61.44 65.70496-14.72 5.76-25.38496-13.22496 2.34496-23.46496 14.29504-20.91008 84.90496-107.94496 51.2-66.98496L459.09504 604.16v-5.54496h-2.13504l-225.49504 146.56-40.10496 5.12L174.08 734.08l2.13504-26.66496L184.32 698.66496l67.84-46.72h-0.21504l0.85504 0.85504z',
+    viewBox: '0 0 1024 1024',
+  },
 }
 
 function platformIconSvg(platform?: string): string {
   const model = modelKeyForPlatform(platform)
-  return `<svg class="model-mark" viewBox="0 0 1024 1024" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="${MODEL_ICON_PATHS[model]}" fill="currentColor"/></svg>`
+  const info = MODEL_ICON_PATHS[model]
+  return `<svg class="model-mark" viewBox="${info.viewBox}" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="${info.path}" fill="currentColor"/></svg>`
 }
 
-function createMeterColumn(window: QuotaWindow, tone: string, accountName: string): HTMLElement {
-  // Keep 0% remaining visible as a normal empty bar (no special color).
-  const remaining = Number.isFinite(window.remaining_percent)
-    ? Math.max(0, Math.min(100, window.remaining_percent))
-    : 0
-  const filled = Math.round((remaining / 100) * BAR_SEGMENTS)
-  // Low/warning styling is for 1–15%; 0% keeps the default empty-track colors.
-  const isLow = remaining > 0 && remaining <= 15
+function createRingBadge(row: AccountQuotaRow): HTMLElement {
+  const model = modelKeyForPlatform(row.platform)
+  const isInactive = row.status !== 'active'
+  const windows = rowWindows(row)
 
-  const col = document.createElement('div')
-  col.className = `meter-col tone-${tone}${isLow ? ' is-low' : ''}`
-  col.title = `${accountName} · ${window.label} 剩余 ${Math.round(remaining)}%\n${formatReset(window.reset_at ?? undefined)}`
+  const window5h = windows.find((w) => w.label.toLowerCase() === '5h' || w.label.toLowerCase().includes('5h'))
+  const window7d = windows.find((w) => w.label.toLowerCase() === '7d' || w.label.toLowerCase().includes('7d'))
 
-  const value = document.createElement('div')
-  value.className = 'meter-value'
-  value.textContent = `${Math.round(remaining)}%`
+  // Split ring: left semi-circle = 5h quota, right semi-circle = 7d quota
+  // Grok only has weekly quota, so Grok always uses a full single circle
+  const isSplit = model !== 'grok' && Boolean(window5h && window7d)
 
-  const stack = document.createElement('div')
-  stack.className = 'meter-stack'
-  stack.setAttribute('role', 'progressbar')
-  stack.setAttribute('aria-label', `${accountName} ${window.label} 剩余`)
-  stack.setAttribute('aria-valuemin', '0')
-  stack.setAttribute('aria-valuemax', '100')
-  stack.setAttribute('aria-valuenow', String(Math.round(remaining)))
+  const badge = document.createElement('div')
+  badge.className = `ring-badge model-${model}${isInactive ? ' is-inactive' : ''}`
+  badge.setAttribute('role', 'listitem')
+  badge.dataset.name = row.name
 
-  for (let i = BAR_SEGMENTS; i >= 1; i -= 1) {
-    const segment = document.createElement('span')
-    segment.className = `meter-seg${i <= filled ? ' is-on' : ''}`
-    stack.append(segment)
+  let ringsHtml = ''
+  let hoverQuotaHtml = ''
+
+  if (isSplit) {
+    const remaining5h = window5h && Number.isFinite(window5h.remaining_percent)
+      ? Math.max(0, Math.min(100, window5h.remaining_percent))
+      : (row.remaining_percent ?? 0)
+
+    const remaining7d = window7d && Number.isFinite(window7d.remaining_percent)
+      ? Math.max(0, Math.min(100, window7d.remaining_percent))
+      : (row.remaining_percent ?? 0)
+
+    const is5hLow = remaining5h > 0 && remaining5h <= 15
+    const is7dLow = remaining7d > 0 && remaining7d <= 15
+
+    const ARC_LEN = 49.40
+    const offset5h = remaining5h <= 0 ? ARC_LEN : ARC_LEN * (1 - remaining5h / 100)
+    const offset7d = remaining7d <= 0 ? ARC_LEN : ARC_LEN * (1 - remaining7d / 100)
+
+    // Tooltip content
+    const tooltipLines = [
+      `${row.name}${row.plan ? ` (${row.plan})` : ''}`,
+      `左半圈 (5小时额度): 剩余 ${Math.round(remaining5h)}% · ${formatReset(window5h?.reset_at ?? undefined)}`,
+      `右半圈 (周额度): 剩余 ${Math.round(remaining7d)}% · ${formatReset(window7d?.reset_at ?? undefined)}`,
+    ]
+    badge.title = tooltipLines.join('\n')
+
+    const tone5h = is5hLow ? 'is-low' : 'tone-quota-5h'
+    const tone7d = is7dLow ? 'is-low' : 'tone-quota-7d'
+
+    ringsHtml = `
+      <svg class="ring-svg" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+        <!-- Tracks -->
+        <path d="M 18.00 3.12 A 17 17 0 0 0 18.00 36.88" class="ring-track left-track" />
+        <path d="M 22.00 3.12 A 17 17 0 0 1 22.00 36.88" class="ring-track right-track" />
+
+        <!-- Left Semi-Circle: 5-Hour Session Quota (#4FA3FF) -->
+        <path
+          d="M 18.00 3.12 A 17 17 0 0 0 18.00 36.88"
+          class="ring-progress left-semi ${tone5h}"
+          stroke-dasharray="${ARC_LEN}"
+          stroke-dashoffset="${offset5h.toFixed(2)}"
+          ${remaining5h <= 0 ? 'style="opacity: 0;"' : ''}
+        />
+
+        <!-- Right Semi-Circle: 7-Day Weekly Quota (#4FA3FF) -->
+        <path
+          d="M 22.00 3.12 A 17 17 0 0 1 22.00 36.88"
+          class="ring-progress right-semi ${tone7d}"
+          stroke-dasharray="${ARC_LEN}"
+          stroke-dashoffset="${offset7d.toFixed(2)}"
+          ${remaining7d <= 0 ? 'style="opacity: 0;"' : ''}
+        />
+      </svg>
+    `
+
+    hoverQuotaHtml = `
+      <div class="ring-hover-values" aria-hidden="true">
+        <span class="ring-hover-val val-5h ${is5hLow ? 'is-low' : ''}">${Math.round(remaining5h)}%</span>
+        <span class="ring-hover-val val-7d ${is7dLow ? 'is-low' : ''}">${Math.round(remaining7d)}%</span>
+      </div>
+    `
+  } else {
+    // Single full circle (e.g. Grok, or accounts with a single quota window)
+    const singleWindow = window7d || window5h || windows[0]
+    const remaining = singleWindow && Number.isFinite(singleWindow.remaining_percent)
+      ? Math.max(0, Math.min(100, singleWindow.remaining_percent))
+      : (row.remaining_percent ?? 0)
+
+    const isLow = remaining > 0 && remaining <= 15
+    const C_FULL = 106.81
+    const offset = remaining <= 0 ? C_FULL : C_FULL * (1 - remaining / 100)
+
+    const label = model === 'grok' ? '周额度' : (singleWindow?.label || '额度')
+    const tooltipLines = [
+      `${row.name}${row.plan ? ` (${row.plan})` : ''}`,
+      `${label}: 剩余 ${Math.round(remaining)}% · ${formatReset(singleWindow?.reset_at ?? undefined)}`,
+    ]
+    badge.title = tooltipLines.join('\n')
+
+    const tone = isLow ? 'is-low' : 'tone-quota-7d'
+
+    ringsHtml = `
+      <svg class="ring-svg" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+        <!-- Full Circle Track -->
+        <circle cx="20" cy="20" r="17" class="ring-track full-track" />
+
+        <!-- Full Circle Progress (#4FA3FF) -->
+        <circle
+          cx="20"
+          cy="20"
+          r="17"
+          class="ring-progress full-circle ${tone}"
+          stroke-dasharray="${C_FULL}"
+          stroke-dashoffset="${offset.toFixed(2)}"
+          ${remaining <= 0 ? 'style="opacity: 0;"' : ''}
+        />
+      </svg>
+    `
+
+    hoverQuotaHtml = `
+      <div class="ring-hover-values is-single" aria-hidden="true">
+        <span class="ring-hover-val val-7d ${isLow ? 'is-low' : ''}">${Math.round(remaining)}%</span>
+      </div>
+    `
   }
 
-  col.append(value, stack)
-  return col
+  // Center logo (26px)
+  const iconInfo = MODEL_ICON_PATHS[model]
+  const centerIconHtml = `
+    <div class="ring-center-icon ${model}" aria-hidden="true">
+      <svg viewBox="${iconInfo.viewBox}" class="model-icon-svg" focusable="false">
+        <path d="${iconInfo.path}" fill="currentColor" />
+      </svg>
+    </div>
+  `
+
+  badge.innerHTML = ringsHtml + centerIconHtml + hoverQuotaHtml
+  return badge
 }
 
 function renderPool(): void {
@@ -877,7 +994,7 @@ function renderPool(): void {
     quotaDock.classList.remove('is-low', 'has-data')
     const empty = document.createElement('div')
     empty.className = 'meter-empty is-clickable'
-    empty.innerHTML = '<span>未连接账号池</span><span class="meter-empty-sub">点击打开设置以登录</span>'
+    empty.innerHTML = '<span>未连接</span><span class="meter-empty-sub">点击登录</span>'
     empty.addEventListener('click', (e) => {
       e.stopPropagation()
       void setSettingsOpen(true)
@@ -893,7 +1010,7 @@ function renderPool(): void {
     quotaDock.classList.add('has-data')
     const empty = document.createElement('div')
     empty.className = 'meter-empty is-clickable'
-    empty.innerHTML = '<span>暂无账号池数据</span><span class="meter-empty-sub">点击打开设置 / 重新登录</span>'
+    empty.innerHTML = '<span>暂无数据</span><span class="meter-empty-sub">点击同步</span>'
     empty.addEventListener('click', (e) => {
       e.stopPropagation()
       void setSettingsOpen(true)
@@ -911,8 +1028,8 @@ function renderPool(): void {
     const empty = document.createElement('div')
     empty.className = 'meter-empty is-clickable'
     empty.innerHTML = settings.showModels.claude || settings.showModels.codex || settings.showModels.grok
-      ? '<span>暂无已勾选模型的账号</span><span class="meter-empty-sub">点击打开设置</span>'
-      : '<span>请在设置中勾选展示模型</span><span class="meter-empty-sub">点击打开设置</span>'
+      ? '<span>无账号</span><span class="meter-empty-sub">点击设置</span>'
+      : '<span>请勾选模型</span><span class="meter-empty-sub">点击设置</span>'
     empty.addEventListener('click', (e) => {
       e.stopPropagation()
       void setSettingsOpen(true)
@@ -937,50 +1054,12 @@ function renderPool(): void {
     ? `${formatClock(latest)} 更新${anyCached ? ' · 缓存' : ''}`
     : '已同步'
 
-  for (const [index, row] of displayRows.entries()) {
-    const windows = rowWindows(row)
-    const isInactive = row.status !== 'active'
-    const group = document.createElement('article')
-    group.className = `meter-group platform-${row.platform || 'openai'}${isInactive ? ' is-inactive' : ''}`
-    group.setAttribute('role', 'listitem')
-    group.dataset.name = row.name
-
-    if (index > 0) {
-      const divider = document.createElement('div')
-      divider.className = 'meter-divider'
-      divider.setAttribute('aria-hidden', 'true')
-      accountList.append(divider)
-    }
-
-    const meters = document.createElement('div')
-    meters.className = 'meter-columns'
-
-    if (!windows.length) {
-      const emptyCol = document.createElement('div')
-      emptyCol.className = 'meter-col tone-muted'
-      emptyCol.innerHTML = `<div class="meter-value">--%</div><div class="meter-stack empty-stack"><span class="meter-seg"></span><span class="meter-seg"></span><span class="meter-seg"></span><span class="meter-seg"></span><span class="meter-seg"></span></div>`
-      emptyCol.title = `${row.name} · 暂无额度数据`
-      meters.append(emptyCol)
-    } else {
-      windows.forEach((window, windowIndex) => {
-        meters.append(
-          createMeterColumn(
-            window,
-            toneForWindow(row.platform, windowIndex, windows.length),
-            row.name,
-          ),
-        )
-      })
-    }
-
-    const badge = document.createElement('div')
-    badge.className = `platform-chip platform-${row.platform || 'openai'}`
-    badge.title = `${row.name}${row.plan ? ` · ${row.plan}` : ''}`
-    badge.innerHTML = platformIconSvg(row.platform)
-
-    group.append(meters, badge)
-    accountList.append(group)
+  for (const row of displayRows) {
+    accountList.append(createRingBadge(row))
   }
+
+  const size = widgetWindowSize()
+  updateDockBackdrop(size.width, size.height)
 
   void syncTrayMenu()
 }
@@ -1059,28 +1138,102 @@ function startAutoRefresh(): void {
   autoRefreshTimer = window.setInterval(() => void refreshQuota(false), intervalMs)
 }
 
-function widgetWindowSize(): { width: number; height: number } {
-  // Fit the transparent window tightly around the meter card.
-  const rows = visiblePoolRows()
-  let content = 8
-  for (const row of rows) {
-    const count = Math.max(rowWindows(row).length, 1)
-    // Dual Claude columns are only ~25px wide; single bar group ~28px + padding.
-    content += count === 1 ? 34 : 42
+function generateDockPath(w: number, h: number): string {
+  // Let each shoulder taper smoothly into the screen edge. The vertical
+  // tangent at either end avoids a hard corner; the lower half mirrors it.
+  const x = (value: number) => Number(((value / 52) * w).toFixed(2))
+  const bottom = (value: number) => h - value
+  const middle = h / 2
+
+  return [
+    `M ${w} 0`,
+    `C ${w} 12, ${x(39)} 22, ${x(25)} 22`,
+    `C ${x(13)} 22, ${x(3)} 28, ${x(1)} 38`,
+    `C 0 43, 0 48, 0 52`,
+    `L 0 ${bottom(52)}`,
+    `C 0 ${bottom(48)}, 0 ${bottom(43)}, ${x(1)} ${bottom(38)}`,
+    `C ${x(3)} ${bottom(28)}, ${x(13)} ${bottom(22)}, ${x(25)} ${bottom(22)}`,
+    `C ${x(39)} ${bottom(22)}, ${w} ${bottom(12)}, ${w} ${h}`,
+    `C ${w} ${bottom(40)}, ${x(51)} ${middle + 22}, ${x(51)} ${middle}`,
+    `C ${x(51)} ${middle - 22}, ${w} 40, ${w} 0`,
+    `Z`,
+  ].join(' ')
+}
+
+function updateDockBackdrop(w: number, h: number): void {
+  const d = generateDockPath(w, h)
+  const pathEl = document.getElementById('dock-backdrop-path')
+  const svgEl = document.getElementById('dock-backdrop-svg')
+  if (pathEl) {
+    pathEl.setAttribute('d', d)
   }
-  content += Math.max(0, rows.length - 1) * 10
-  const width = Math.min(420, Math.max(160, content + 24))
-  const height = 82
+  if (svgEl) {
+    svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`)
+    svgEl.setAttribute('width', String(w))
+    svgEl.setAttribute('height', String(h))
+  }
+  meterCard.style.clipPath = `path('${d}')`
+}
+
+function widgetWindowSize(): { width: number; height: number } {
+  const width = 52
+  const rows = visiblePoolRows()
+  if (!rows.length) {
+    return { width, height: 120 }
+  }
+  const count = rows.length
+  // 44px top flare/padding + count * 40px badge + (count - 1) * 5px gap + 44px bottom flare/padding
+  const height = 88 + count * 40 + (count - 1) * 5
   return { width, height }
 }
 
-type WindowMode = 'pet' | 'settings'
+async function anchorWindowToRight(width?: number, height?: number): Promise<void> {
+  if (!isDesktop) return
+  try {
+    const win = getCurrentWindow()
+    await win.setShadow(false).catch(() => {})
+    const monitor = await currentMonitor()
+    if (!monitor) {
+      await invoke('anchor_main_window_right', { y: settings.windowY ?? null })
+      return
+    }
+    const scale = monitor.scaleFactor || 1
+    const workArea = monitor.workArea || {
+      position: monitor.position,
+      size: monitor.size,
+    }
+    const workX = workArea.position.x / scale
+    const workY = workArea.position.y / scale
+    const workW = workArea.size.width / scale
+    const workH = workArea.size.height / scale
 
-async function applyWindowSize(_mode?: WindowMode): Promise<void> {
+    const size = widgetWindowSize()
+    const winW = width ?? size.width
+    const winH = height ?? size.height
+
+    const marginX = 0
+    const targetX = Math.round(workX + workW - winW - marginX)
+    let targetY: number
+    if (typeof settings.windowY === 'number' && Number.isFinite(settings.windowY)) {
+      targetY = Math.round(Math.max(workY, Math.min(workY + workH - winH, settings.windowY)))
+    } else {
+      targetY = Math.round(workY + (workH - winH) / 2)
+    }
+
+    await win.setPosition(new LogicalPosition(targetX, targetY))
+  } catch (err) {
+    console.error('Failed to anchor window to right:', err)
+  }
+}
+
+async function applyWindowSize(): Promise<void> {
   if (!isDesktop) return
   const win = getCurrentWindow()
   const size = widgetWindowSize()
+  updateDockBackdrop(size.width, size.height)
   await win.setSize(new LogicalSize(size.width, size.height))
+  await win.setShadow(false).catch(() => {})
+  await anchorWindowToRight(size.width, size.height)
 }
 
 /** Fill the in-page settings form (browser fallback only). */
@@ -1281,13 +1434,6 @@ cardOpacityInput.addEventListener('input', () => {
   applyCardOpacity(percent / 100)
 })
 
-// Distinguish a drag (window move) from a tap (playful reaction): start dragging only
-// once the pointer has moved past a small threshold, otherwise treat the press as a tap.
-let pressActive = false
-let dragStarted = false
-let pressStartX = 0
-let pressStartY = 0
-
 async function openActionMenu(): Promise<void> {
   // Native popup menus are flaky on Windows transparent always-on-top windows;
   // use the tray menu instead.
@@ -1341,45 +1487,157 @@ async function handleMenuAction(action: string): Promise<void> {
   }
 }
 
-meterCard.addEventListener('mousedown', (event) => {
-  if (event.button !== 0) return
-  // Ignore the second mousedown of a double-click (detail >= 2) so OS maximize never arms.
-  if (event.detail > 1) {
+// Vertical drag state: allows user to slide the edge-dock widget up and down along the screen's right bezel.
+let dragActive = false
+let dragStarted = false
+let wasDragging = false
+let dragStartCursorY = 0
+let dragStartWindowY = 0
+let dragTargetX = 0
+let dragWorkMinY = 0
+let dragWorkMaxY = 0
+let dragRafId: number | null = null
+let dragPendingY: number | null = null
+
+meterCard.addEventListener('pointerdown', async (event) => {
+  if (event.button !== 0 || !isDesktop) return
+  if ((event.target as HTMLElement)?.closest('.icon-button')) return
+
+  dragActive = true
+  dragStarted = false
+  wasDragging = false
+  dragStartCursorY = event.screenY
+
+  try {
+    const win = getCurrentWindow()
+    const currentPos = await win.outerPosition()
+    const monitor = await currentMonitor()
+    const scale = monitor?.scaleFactor || 1
+    const workArea = monitor?.workArea || {
+      position: monitor?.position || { x: 0, y: 0 },
+      size: monitor?.size || { width: 1920, height: 1080 },
+    }
+    const workX = workArea.position.x / scale
+    const workY = workArea.position.y / scale
+    const workW = workArea.size.width / scale
+    const workH = workArea.size.height / scale
+
+    const size = widgetWindowSize()
+    dragTargetX = Math.round(workX + workW - size.width)
+    dragStartWindowY = Math.round(currentPos.y / scale)
+    dragWorkMinY = Math.round(workY)
+    dragWorkMaxY = Math.round(workY + workH - size.height)
+  } catch {
+    dragStartWindowY = settings.windowY ?? 300
+    dragWorkMinY = 0
+    dragWorkMaxY = 2000
+  }
+
+  try {
+    meterCard.setPointerCapture(event.pointerId)
+  } catch {
+    // ignore
+  }
+})
+
+window.addEventListener('pointermove', (event) => {
+  if (!dragActive || !isDesktop) return
+
+  const deltaY = event.screenY - dragStartCursorY
+  if (!dragStarted && Math.abs(deltaY) > 3) {
+    dragStarted = true
+    wasDragging = true
+    document.documentElement.classList.add('is-dragging-vertical')
+  }
+
+  if (dragStarted) {
+    const rawY = dragStartWindowY + deltaY
+    const clampedY = Math.max(dragWorkMinY, Math.min(dragWorkMaxY, rawY))
+    dragPendingY = clampedY
+
+    if (!dragRafId) {
+      dragRafId = requestAnimationFrame(() => {
+        if (dragPendingY !== null) {
+          const win = getCurrentWindow()
+          void win.setPosition(new LogicalPosition(dragTargetX, dragPendingY))
+          dragPendingY = null
+        }
+        dragRafId = null
+      })
+    }
+  }
+})
+
+window.addEventListener('pointerup', async (event) => {
+  if (!dragActive) return
+  dragActive = false
+
+  try {
+    meterCard.releasePointerCapture(event.pointerId)
+  } catch {
+    // ignore
+  }
+
+  if (dragRafId) {
+    cancelAnimationFrame(dragRafId)
+    dragRafId = null
+  }
+
+  if (dragStarted) {
+    document.documentElement.classList.remove('is-dragging-vertical')
+    const deltaY = event.screenY - dragStartCursorY
+    const finalY = Math.max(dragWorkMinY, Math.min(dragWorkMaxY, dragStartWindowY + deltaY))
+
+    const win = getCurrentWindow()
+    await win.setPosition(new LogicalPosition(dragTargetX, finalY))
+
+    settings.windowY = finalY
+    await saveSettings()
+
+    window.setTimeout(() => {
+      wasDragging = false
+    }, 120)
+  } else {
+    wasDragging = false
+  }
+  dragStarted = false
+})
+
+window.addEventListener('pointercancel', () => {
+  if (dragActive) {
+    dragActive = false
+    dragStarted = false
+    document.documentElement.classList.remove('is-dragging-vertical')
+    if (dragRafId) {
+      cancelAnimationFrame(dragRafId)
+      dragRafId = null
+    }
+    window.setTimeout(() => {
+      wasDragging = false
+    }, 120)
+  }
+})
+
+// Click anywhere on card (outside child buttons) to refresh quota (suppressed after vertical drag).
+meterCard.addEventListener('click', (event) => {
+  if (wasDragging) {
     event.preventDefault()
+    event.stopPropagation()
     return
   }
-  pressActive = true
-  dragStarted = false
-  pressStartX = event.screenX
-  pressStartY = event.screenY
-})
-window.addEventListener('mousemove', (event) => {
-  if (!pressActive || dragStarted || !isDesktop) return
-  if (Math.hypot(event.screenX - pressStartX, event.screenY - pressStartY) > 4) {
-    dragStarted = true
-    void getCurrentWindow().startDragging()
-  }
-})
-window.addEventListener('mouseup', () => {
-  if (!pressActive) return
-  pressActive = false
-  if (!dragStarted) {
-    void refreshQuota(true)
-  }
+  if ((event.target as HTMLElement)?.closest('.icon-button')) return
+  void refreshQuota(true)
 })
 
 // Prevent titlebar-style double-click maximize (borderless widget must stay compact).
 meterCard.addEventListener('dblclick', (event) => {
   event.preventDefault()
   event.stopPropagation()
-  pressActive = false
-  dragStarted = false
   if (isDesktop) {
     const win = getCurrentWindow()
     void win.setMaximizable(false)
     void win.unmaximize().catch(() => {})
   }
-  void refreshQuota(true)
 })
 shell.addEventListener('dblclick', (event) => {
   event.preventDefault()

@@ -41,10 +41,10 @@ button {
   -webkit-user-select: none;
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
-  /* Defaults until settings applyCardOpacity() runs */
-  --meter-card-opacity: 0.62;
-  --meter-card-border: 0.34;
-  --meter-card-blur: 12px;
+  /* Solid opaque dock background (no transparency) */
+  --meter-card-opacity: 1;
+  --meter-card-border: 0.16;
+  --meter-card-blur: 0px;
 }
 
 /* Transparent always-on-top + backdrop-filter is very expensive on Windows WebView2. */
@@ -99,7 +99,7 @@ html.is-windows .pet-shell {
   justify-content: center;
   width: 100%;
   height: 100%;
-  padding: 3px 4px;
+  padding: 0;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -115,7 +115,7 @@ html.is-windows .pet-shell {
   -webkit-user-drag: none;
 }
 
-/* —— Permanent meter panel (floating widget style) —— */
+/* —— Permanent meter panel (floating vertical capsule widget style) —— */
 .quota-panel {
   position: relative;
   z-index: 5;
@@ -136,100 +136,91 @@ html.is-windows .pet-shell {
   app-region: no-drag;
 }
 
-/* Frosted card behind the bars; opacity driven by --meter-card-* from settings. */
+/* Dark pill capsule card matching the reference image; opacity driven by --meter-card-* */
 .meter-card {
   position: relative;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  width: 52px;
   max-width: 100%;
-  padding: 10px 14px 9px;
-  border: 1px solid rgba(255, 255, 255, var(--meter-card-border, 0.34));
-  border-radius: 16px;
-  background:
-    linear-gradient(
-      165deg,
-      rgba(255, 255, 255, calc(var(--meter-card-opacity, 0.62) * 0.92)) 0%,
-      rgba(244, 248, 255, var(--meter-card-opacity, 0.62)) 55%,
-      rgba(236, 242, 252, calc(var(--meter-card-opacity, 0.62) * 0.95)) 100%
-    );
-  box-shadow: 0 4px 16px rgba(35, 60, 100, 0.08);
-  backdrop-filter: blur(var(--meter-card-blur, 12px)) saturate(1.15);
-  -webkit-backdrop-filter: blur(var(--meter-card-blur, 12px)) saturate(1.15);
-  cursor: grab;
+  padding: 44px 7px 44px 5px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: ns-resize;
   outline: none;
-  transition:
-    background 160ms ease,
-    border-color 160ms ease,
-    backdrop-filter 160ms ease,
-    box-shadow 160ms ease,
-    transform 140ms ease;
+  box-sizing: border-box;
 }
 
-.meter-card:hover {
-  border-color: rgba(255, 255, 255, calc(var(--meter-card-border, 0.34) + 0.22));
-  box-shadow: 0 6px 20px rgba(35, 60, 100, 0.14);
+html.is-dragging-vertical,
+html.is-dragging-vertical * {
+  cursor: ns-resize !important;
+  user-select: none !important;
 }
 
-.meter-card:active {
-  cursor: grabbing;
-}
-
-.meter-card.is-refreshing {
-  border-color: rgba(65, 141, 217, 0.6);
-  animation: meter-pulse 1.2s ease-in-out infinite alternate;
-}
-
-@keyframes meter-pulse {
-  from {
-    box-shadow: 0 2px 10px rgba(65, 141, 217, 0.15);
-  }
-  to {
-    box-shadow: 0 4px 20px rgba(65, 141, 217, 0.38);
-  }
-}
-
-.meter-card::before {
-  content: '';
+.dock-backdrop-svg {
   position: absolute;
-  inset: 1px;
-  border-radius: 15px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, calc(var(--meter-card-opacity, 0.62) * 0.45)) 0%,
-    transparent 42%
-  );
+  z-index: 0;
+  overflow: visible;
+}
+
+.dock-backdrop-path {
+  fill: #121214;
+  stroke: rgba(255, 255, 255, var(--meter-card-border, 0.16));
+  stroke-width: 1px;
+  transition: stroke 180ms ease, fill 180ms ease;
+}
+
+.meter-card:hover .dock-backdrop-path {
+  stroke: rgba(255, 255, 255, calc(var(--meter-card-border, 0.14) + 0.15));
+}
+
+.meter-card.is-refreshing .dock-backdrop-path {
+  stroke: rgba(56, 189, 248, 0.7);
+  animation: dock-pulse 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes dock-pulse {
+  0% {
+    stroke: rgba(56, 189, 248, 0.4);
+  }
+  50% {
+    stroke: rgba(56, 189, 248, 0.95);
+  }
+  100% {
+    stroke: rgba(16, 185, 129, 0.7);
+  }
 }
 
 .meter-board {
   position: relative;
   z-index: 1;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 0;
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 0 2px;
-  scrollbar-width: none;
-}
-
-.meter-board::-webkit-scrollbar {
-  display: none;
+  gap: 5px;
+  width: 100%;
+  padding: 0;
 }
 
 .meter-empty {
-  min-width: 160px;
-  padding: 16px 12px;
-  color: #9aa5b6;
+  min-width: 50px;
+  padding: 14px 4px;
+  color: #8a96aa;
   font-size: 11px;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .meter-empty.is-clickable {
@@ -239,173 +230,170 @@ html.is-windows .pet-shell {
 }
 
 .meter-empty.is-clickable:hover {
-  color: #6366f1;
+  color: #38bdf8;
 }
 
 .meter-empty-sub {
   font-size: 10px;
-  color: #818cf8;
+  color: #60a5fa;
 }
 
-.meter-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  min-width: 28px;
-  padding: 0 4px;
-}
-
-.meter-group.is-inactive {
-  opacity: 0.5;
-}
-
-.meter-divider {
-  align-self: stretch;
-  width: 1px;
-  margin: 4px 4px 28px;
-  background: linear-gradient(
-    180deg,
-    transparent 0%,
-    rgba(170, 180, 198, 0.35) 18%,
-    rgba(170, 180, 198, 0.35) 82%,
-    transparent 100%
-  );
-}
-
-.meter-columns {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 5px;
-}
-
-/* Column width follows the bar, not the percentage text */
-.meter-col {
+/* Circular ring badge */
+.ring-badge {
   position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  width: 10px;
-  min-width: 10px;
-  padding-top: 9px;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 50%;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.meter-value {
+.ring-badge:hover {
+  transform: scale(1.05);
+}
+
+.ring-badge:active {
+  transform: scale(0.95);
+}
+
+.ring-badge.is-inactive {
+  opacity: 0.35;
+  filter: grayscale(0.8);
+}
+
+.ring-svg {
   position: absolute;
-  top: 0;
-  left: 50%;
-  z-index: 1;
-  width: max-content;
-  min-width: 0;
-  color: #8b8fd4;
-  font-size: 6px;
-  font-weight: 700;
-  line-height: 1;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.05em;
-  transform: translateX(-50%);
-  white-space: nowrap;
+  inset: 0;
+  width: 40px;
+  height: 40px;
+  overflow: visible;
   pointer-events: none;
 }
 
-.meter-col.tone-amber .meter-value {
-  color: #d4844a;
+.ring-track {
+  fill: none;
+  stroke: #556070;
+  stroke-width: 2.5;
+  stroke-linecap: round;
 }
 
-.meter-col.tone-violet .meter-value {
-  color: #8b7fd4;
+.ring-progress {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.meter-col.tone-muted .meter-value {
-  color: #b0b8c6;
+.ring-progress.full-circle {
+  transform: rotate(-90deg);
+  transform-origin: 20px 20px;
 }
 
-.meter-col.is-low .meter-value {
-  color: #d55b55;
+/* Universal Quota Ring Colors across all models (High-light #4FA3FF) */
+/* 5-Hour Session Quota (Left semi-circle across all models) */
+.ring-progress.tone-quota-5h {
+  stroke: url(#gradient-quota-5h);
 }
 
-.meter-stack {
+/* 7-Day Weekly Quota (Right semi-circle & full circle across all models) */
+.ring-progress.tone-quota-7d {
+  stroke: url(#gradient-quota-7d);
+}
+
+/* Low quota warning (<= 15%) */
+.ring-progress.is-low {
+  stroke: url(#gradient-alert) !important;
+}
+
+/* Center icon inside ring */
+.ring-center-icon {
+  position: relative;
+  z-index: 2;
   display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 1px;
-  width: 10px;
-  height: 20px;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  pointer-events: none;
+  transition: opacity 120ms cubic-bezier(0.2, 0, 0.2, 1), transform 120ms cubic-bezier(0.2, 0, 0.2, 1);
 }
 
-.meter-seg {
+.ring-badge:hover .ring-center-icon {
+  opacity: 0;
+  transform: scale(0.65);
+}
+
+.ring-center-icon.claude {
+  color: #ff7844;
+}
+
+.ring-center-icon.grok {
+  color: #ffffff;
+}
+
+.ring-center-icon.grok svg {
+  transform: scale(0.86);
+}
+
+.ring-center-icon.codex {
+  color: #ffffff;
+}
+
+.ring-center-icon svg {
   display: block;
   width: 100%;
-  height: 3px;
-  border-radius: 1.5px;
-  /* Opaque track — alpha colors vanish on Windows transparent WebView2. */
-  background: #d5dbe5;
-  transition: background 280ms ease, transform 280ms ease;
+  height: 100%;
+  overflow: visible;
 }
 
-.meter-col.tone-amber .meter-seg.is-on {
-  background: linear-gradient(180deg, #f0b07a 0%, #d9844a 100%);
-  box-shadow: 0 1px 2px rgba(196, 120, 60, 0.18);
+/* Fast hover quota values inside ring */
+.ring-hover-values {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0px;
+  opacity: 0;
+  transform: scale(0.8);
+  pointer-events: none;
+  transition: opacity 120ms cubic-bezier(0.2, 0, 0.2, 1), transform 120ms cubic-bezier(0.2, 0, 0.2, 1);
+  user-select: none;
 }
 
-.meter-col.tone-violet .meter-seg.is-on {
-  background: linear-gradient(180deg, #b5a8ef 0%, #8b7fd4 100%);
-  box-shadow: 0 1px 2px rgba(110, 96, 180, 0.16);
+.ring-badge:hover .ring-hover-values {
+  opacity: 1;
+  transform: scale(1);
 }
 
-.meter-col.is-low .meter-seg.is-on {
-  background: linear-gradient(180deg, #f0a09a 0%, #d55b55 100%);
-  box-shadow: 0 1px 2px rgba(180, 70, 70, 0.16);
+.ring-hover-val {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
 }
 
-.platform-chip {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  overflow: hidden;
-  background: transparent;
-  color: #167a68;
+.ring-hover-val.val-5h,
+.ring-hover-val.val-7d {
+  color: #4FA3FF;
+  font-size: 9.5px;
 }
 
-.platform-chip svg {
-  display: block;
-  width: 21px;
-  height: 21px;
-  filter: drop-shadow(0 2px 2px rgba(35, 45, 60, 0.12));
+.ring-hover-val.is-low {
+  color: #ff4d4f !important;
 }
 
-.platform-chip.platform-anthropic {
-  color: #d97757;
-}
-
-.platform-chip.platform-xai,
-.platform-chip.platform-grok {
-  color: #171717;
-}
-
-.platform-chip.platform-xai svg,
-.platform-chip.platform-grok svg {
-  width: 22px;
-  height: 22px;
-}
-
-.platform-chip.platform-xai path,
-.platform-chip.platform-grok path {
-  stroke: rgba(255, 255, 255, 0.72);
-  stroke-width: 18px;
-  paint-order: stroke fill;
-}
-
-.platform-chip.platform-anthropic,
-.platform-chip.platform-openai,
-.platform-chip.platform-xai,
-.platform-chip.platform-grok {
-  background: transparent;
-  border: 0;
+.ring-hover-values.is-single .ring-hover-val {
+  font-size: 12px;
+  letter-spacing: -0.02em;
 }
 
 .visually-hidden {

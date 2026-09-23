@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/images/app-icon.png" width="128" alt="Sub2API Pet" />
+<img src="docs/images/app-icon.png" width="128" alt="Aira" />
 
-# Sub2API Pet
+# Aira
 
 **常驻桌面的 AI 账号池额度监控桌宠** · 基于 [Tauri 2](https://tauri.app/) 构建
 
@@ -15,7 +15,7 @@
 
 ## ✨ 简介
 
-Sub2API Pet 连接你的 **Sub2API** 管理后台，拉取账号池中所有 AI 账号的额度，
+Aira 连接你的 **Sub2API** 管理后台，拉取账号池中所有 AI 账号的额度，
 以「桌面宠物 + 菜单栏托盘 + 账号面板」三种形态呈现：
 
 - 屏幕上有一只透明、置顶、可拖动的**桌宠**，旁边挂着额度柱状图；

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sub2API Pet",
+  "productName": "Aira",
   "version": "0.1.5",
   "identifier": "com.sub2api.pet",
   "build": {
@@ -14,20 +14,19 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sub2API Pet",
-        "width": 200,
-        "height": 84,
-        "minWidth": 100,
-        "minHeight": 60,
+        "title": "Aira",
+        "width": 52,
+        "height": 218,
+        "minWidth": 36,
+        "minHeight": 36,
         "resizable": false,
         "maximizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "visibleOnAllWorkspaces": true,
-        "skipTaskbar": true,
         "shadow": false,
-        "center": true
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true
       }
     ],
     "security": {

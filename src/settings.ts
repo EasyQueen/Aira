@@ -61,7 +61,7 @@ const defaultSettings: PetSettings = {
   maxDisplayAccounts: 5,
   refreshIntervalSec: 30,
   showModels: { ...defaultShowModels },
-  cardOpacity: 0.62,
+  cardOpacity: 0.92,
 }
 
 const DISPLAY_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 15, 20] as const
@@ -140,7 +140,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <div class="settings-scroll">
           <header class="sheet-header">
             <div>
-              <span class="eyebrow">SUB2API PET</span>
+              <span class="eyebrow">AIRA</span>
               <h1>账号池额度</h1>
             </div>
           </header>
@@ -184,12 +184,12 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
                   <span><strong>Claude</strong><small>Anthropic</small></span>
                 </label>
                 <label class="model-check">
-                  <input id="show-codex" type="checkbox" checked />
-                  <span><strong>Codex</strong><small>OpenAI</small></span>
-                </label>
-                <label class="model-check">
                   <input id="show-grok" type="checkbox" checked />
                   <span><strong>Grok</strong><small>xAI</small></span>
+                </label>
+                <label class="model-check">
+                  <input id="show-codex" type="checkbox" checked />
+                  <span><strong>Codex</strong><small>OpenAI</small></span>
                 </label>
               </div>
               <small class="field-hint">默认三项全开；取消勾选后对应账号不在宠物与托盘中展示</small>
@@ -207,8 +207,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
             <label class="field setting-select-field card-opacity-field">
               <span>卡片不透明度</span>
               <div class="opacity-row">
-                <input id="card-opacity" type="range" min="0" max="100" step="1" value="62" />
-                <span class="opacity-value" id="card-opacity-label">62%</span>
+                <input id="card-opacity" type="range" min="0" max="100" step="1" value="92" />
+                <span class="opacity-value" id="card-opacity-label">92%</span>
               </div>
               <small class="field-hint">柱状图背景卡片：0% 全透明，100% 不透明</small>
             </label>
@@ -227,7 +227,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
             <div class="about-head">
               <div class="about-title">
                 <span class="about-eyebrow">关于应用</span>
-                <strong>Sub2API Pet</strong>
+                <strong>Aira</strong>
               </div>
               <div class="about-version" title="当前安装版本">
                 <span class="about-version-label">当前版本</span>

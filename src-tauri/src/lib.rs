@@ -10,7 +10,7 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     webview::WebviewWindowBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, Position, Runtime, WebviewUrl,
+    AppHandle, Emitter, Manager, PhysicalPosition, Position, Runtime, WebviewUrl, WebviewWindow,
 };
 use thiserror::Error;
 
@@ -560,6 +560,178 @@ fn parse_cached_quota(
     })
 }
 
+/// Collect OpenAI/Codex usage windows from active rate_limit response (5h session + 7d weekly).
+fn parse_openai_force_windows(data: &Value) -> Vec<QuotaWindow> {
+    let mut windows = Vec::new();
+    if let Some(rate_limit) = data.get("rate_limit") {
+        let mut win_5h: Option<QuotaWindow> = None;
+        let mut win_7d: Option<QuotaWindow> = None;
+
+        for key in ["primary_window", "secondary_window"] {
+            if let Some(w) = rate_limit.get(key).filter(|v| v.is_object()) {
+                if let Some(used) = w.get("used_percent").and_then(Value::as_f64) {
+                    let used = used.clamp(0.0, 100.0);
+                    let seconds = w
+                        .get("limit_window_seconds")
+                        .and_then(Value::as_i64)
+                        .or_else(|| {
+                            w.get("window_minutes")
+                                .and_then(Value::as_i64)
+                                .map(|m| m * 60)
+                        })
+                        .unwrap_or(0);
+                    let reset_at = w
+                        .get("reset_at")
+                        .and_then(Value::as_i64)
+                        .and_then(iso_from_epoch)
+                        .or_else(|| {
+                            w.get("reset_at")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        });
+
+                    if seconds > 0 && seconds <= 43200 {
+                        win_5h = Some(QuotaWindow {
+                            label: "5h".into(),
+                            used_percent: used,
+                            remaining_percent: (100.0 - used).max(0.0),
+                            reset_at,
+                        });
+                    } else if seconds > 43200 {
+                        win_7d = Some(QuotaWindow {
+                            label: "7d".into(),
+                            used_percent: used,
+                            remaining_percent: (100.0 - used).max(0.0),
+                            reset_at,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(w) = win_5h {
+            windows.push(w);
+        }
+        if let Some(w) = win_7d {
+            windows.push(w);
+        }
+    }
+
+    if windows.is_empty() {
+        let parsed = parse_usage_windows(data);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
+    windows
+}
+
+/// Collect OpenAI/Codex usage windows from cached account extra fields (5h session + 7d weekly).
+fn parse_openai_cached_windows(data: &Value) -> Vec<QuotaWindow> {
+    let Some(extra) = data.get("extra") else {
+        return Vec::new();
+    };
+
+    let mut win_5h: Option<QuotaWindow> = None;
+    let mut win_7d: Option<QuotaWindow> = None;
+
+    // Check canonical / direct fields first
+    if let Some(used) = extra.get("codex_5h_used_percent").and_then(Value::as_f64) {
+        let used = used.clamp(0.0, 100.0);
+        let reset_at = extra
+            .get("codex_5h_reset_at")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                let remaining = extra.get("codex_5h_reset_after_seconds")?.as_i64()?;
+                iso_from_epoch(Utc::now().timestamp() + remaining)
+            });
+        win_5h = Some(QuotaWindow {
+            label: "5h".into(),
+            used_percent: used,
+            remaining_percent: (100.0 - used).max(0.0),
+            reset_at,
+        });
+    }
+
+    if let Some(used) = extra.get("codex_7d_used_percent").and_then(Value::as_f64) {
+        let used = used.clamp(0.0, 100.0);
+        let reset_at = extra
+            .get("codex_7d_reset_at")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                let remaining = extra.get("codex_7d_reset_after_seconds")?.as_i64()?;
+                iso_from_epoch(Utc::now().timestamp() + remaining)
+            });
+        win_7d = Some(QuotaWindow {
+            label: "7d".into(),
+            used_percent: used,
+            remaining_percent: (100.0 - used).max(0.0),
+            reset_at,
+        });
+    }
+
+    // Check primary / secondary window pairs (standard in Sub2API for Codex)
+    for prefix in ["primary", "secondary"] {
+        let minutes = extra
+            .get(format!("codex_{}_window_minutes", prefix).as_str())
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let used_opt = extra
+            .get(format!("codex_{}_used_percent", prefix).as_str())
+            .and_then(Value::as_f64);
+
+        if let Some(used) = used_opt {
+            let used = used.clamp(0.0, 100.0);
+            let reset_at = extra
+                .get(format!("codex_{}_reset_at", prefix).as_str())
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    let remaining = extra
+                        .get(format!("codex_{}_reset_after_seconds", prefix).as_str())?
+                        .as_i64()?;
+                    iso_from_epoch(Utc::now().timestamp() + remaining)
+                });
+
+            if minutes > 0 && minutes <= 720 && win_5h.is_none() {
+                win_5h = Some(QuotaWindow {
+                    label: "5h".into(),
+                    used_percent: used,
+                    remaining_percent: (100.0 - used).max(0.0),
+                    reset_at,
+                });
+            } else if minutes > 720 && win_7d.is_none() {
+                win_7d = Some(QuotaWindow {
+                    label: "7d".into(),
+                    used_percent: used,
+                    remaining_percent: (100.0 - used).max(0.0),
+                    reset_at,
+                });
+            }
+        }
+    }
+
+    let mut windows = Vec::new();
+    if let Some(w) = win_5h {
+        windows.push(w);
+    }
+    if let Some(w) = win_7d {
+        windows.push(w);
+    }
+
+    if windows.is_empty() {
+        let parsed = parse_usage_windows(extra);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
+    windows
+}
+
 fn grok_billing_snapshot(data: &Value) -> Option<&Value> {
     data.pointer("/extra/grok_billing_snapshot")
         .or_else(|| data.get("grok_billing_snapshot"))
@@ -821,6 +993,15 @@ async fn quota_for_openai_account(
         )
         .await
         {
+            let windows = parse_openai_force_windows(&active);
+            if !windows.is_empty() {
+                return row_from_windows(
+                    account,
+                    windows,
+                    Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)),
+                    Some("active".into()),
+                );
+            }
             if let Some(snapshot) = parse_force_quota(account.id, account.name.clone(), &active) {
                 return snapshot_to_row(snapshot, account);
             }
@@ -839,14 +1020,22 @@ async fn quota_for_openai_account(
             {
                 let row = usage_to_row(account, &usage, "active");
                 if !row.windows.is_empty() {
-                    // Panel shows a single weekly-style bar for Codex.
-                    return collapse_openai_row(row);
+                    return row;
                 }
             }
         }
     }
 
     if let Some(item) = list_item {
+        let windows = parse_openai_cached_windows(item);
+        if !windows.is_empty() {
+            let updated_at = item
+                .pointer("/extra/codex_usage_updated_at")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+            return row_from_windows(account, windows, Some(updated_at), Some("cached".into()));
+        }
         if let Some(snapshot) = parse_cached_quota(account.id, account.name.clone(), item) {
             return snapshot_to_row(snapshot, account);
         }
@@ -859,6 +1048,15 @@ async fn quota_for_openai_account(
     )
     .await
     {
+        let windows = parse_openai_cached_windows(&detail);
+        if !windows.is_empty() {
+            let updated_at = detail
+                .pointer("/extra/codex_usage_updated_at")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+            return row_from_windows(account, windows, Some(updated_at), Some("cached".into()));
+        }
         if let Some(snapshot) = parse_cached_quota(account.id, account.name.clone(), &detail) {
             return snapshot_to_row(snapshot, account);
         }
@@ -874,7 +1072,7 @@ async fn quota_for_openai_account(
         {
             let row = usage_to_row(account, &usage, "cached");
             if !row.windows.is_empty() {
-                return collapse_openai_row(row);
+                return row;
             }
         }
     }
@@ -882,25 +1080,6 @@ async fn quota_for_openai_account(
     empty_row(account)
 }
 
-fn collapse_openai_row(mut row: AccountQuotaRow) -> AccountQuotaRow {
-    if row.windows.len() <= 1 {
-        return row;
-    }
-    // Prefer weekly window for Codex display.
-    if let Some(weekly) = row
-        .windows
-        .iter()
-        .find(|window| window.label == "7d")
-        .cloned()
-    {
-        row.remaining_percent = Some(weekly.remaining_percent);
-        row.windows = vec![weekly];
-    } else {
-        row.windows.truncate(1);
-        row.remaining_percent = row.windows.first().map(|window| window.remaining_percent);
-    }
-    row
-}
 
 async fn quota_for_anthropic_account(
     state: &ApiState,
@@ -1078,10 +1257,15 @@ async fn refresh_pool_quotas(
         .into_iter()
         .filter_map(|item| account_from_value(&item).map(|account| (account, item)))
         .collect();
+    let platform_rank = |platform: &str| match platform {
+        "anthropic" | "claude" => 0,
+        "xai" | "grok" => 1,
+        _ => 2,
+    };
     accounts.sort_by(|(a, _), (b, _)| {
         (a.status != "active")
             .cmp(&(b.status != "active"))
-            .then_with(|| a.platform.cmp(&b.platform))
+            .then_with(|| platform_rank(&a.platform).cmp(&platform_rank(&b.platform)))
             .then_with(|| a.name.cmp(&b.name))
     });
 
@@ -1373,6 +1557,7 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "macos")]
         macos_window::configure_spaces_window(&window);
+        anchor_window_to_right(&window, None);
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -1470,7 +1655,7 @@ fn ensure_settings_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetError
     }
 
     WebviewWindowBuilder::new(app, SETTINGS_LABEL, WebviewUrl::App("settings.html".into()))
-        .title("Sub2API Pet 设置")
+        .title("Aira 设置")
         .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
         .decorations(true)
         .transparent(false)
@@ -1593,7 +1778,7 @@ async fn check_app_update(app: AppHandle) -> Result<AppUpdateInfo, PetError> {
     let current_version = app.package_info().version.to_string();
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
-        .user_agent(format!("Sub2API-Pet/{}", current_version))
+        .user_agent(format!("Aira/{}", current_version))
         .build()?;
 
     let response = client.get(GITHUB_LATEST_RELEASE).send().await?;
@@ -1803,28 +1988,18 @@ fn apply_tray_title_and_tooltip<R: Runtime>(
     let overall = tray_overall_remaining(payload)
         .map(|value| format!("{}%", value.round().clamp(0.0, 100.0) as i64))
         .unwrap_or_else(|| "--%".into());
-    // Menu-bar text beside the pet icon (macOS): overall remaining quota.
-    let title = if total == 0 {
-        String::new()
-    } else {
-        overall.clone()
-    };
     let tooltip = if payload.refreshing {
-        format!("Sub2API Pet · 同步中… · {online}/{total}")
+        format!("Aira · 同步中… · {online}/{total}")
     } else if total == 0 {
-        "Sub2API Pet · 暂无账号".into()
+        "Aira · 暂无账号".into()
     } else {
-        format!("Sub2API Pet · {online}/{total} 在线 · {abnormal} 异常 · 额度 {overall}")
+        format!("Aira · {online}/{total} 在线 · {abnormal} 异常 · 额度 {overall}")
     };
-    // Title text beside the tray icon is a macOS menu-bar affordance; skip on other platforms.
+    // Menu-bar text beside the tray icon is disabled per user request (icon only, no 50% text).
     #[cfg(target_os = "macos")]
     {
-        tray.set_title(Some(&title))
+        tray.set_title(None::<&str>)
             .map_err(|error| PetError::Api(error.to_string()))?;
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = title;
     }
     tray.set_tooltip(Some(&tooltip))
         .map_err(|error| PetError::Api(error.to_string()))?;
@@ -1915,6 +2090,36 @@ fn center_popup_position<R: Runtime>(app: &AppHandle<R>, w: i32, h: i32) -> Phys
     PhysicalPosition::new(120, 80)
 }
 
+fn anchor_window_to_right<R: Runtime>(window: &WebviewWindow<R>, target_y: Option<i32>) {
+    let _ = window.set_shadow(false);
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        let area = monitor.work_area();
+        let margin = 0;
+        if let Ok(win_size) = window.outer_size() {
+            let x = area.position.x + (area.size.width as i32 - win_size.width as i32 - margin);
+            let max_y = (area.position.y + area.size.height as i32 - win_size.height as i32).max(area.position.y);
+            let y = match target_y {
+                Some(ty) => ty.clamp(area.position.y, max_y),
+                None => area.position.y + (area.size.height as i32 - win_size.height as i32).max(0) / 2,
+            };
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+    }
+}
+
+#[tauri::command]
+fn anchor_main_window_right<R: Runtime>(app: AppHandle<R>, y: Option<i32>) -> Result<(), PetError> {
+    if let Some(window) = app.get_webview_window("main") {
+        anchor_window_to_right(&window, y);
+    }
+    Ok(())
+}
+
 fn ensure_account_panel_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), PetError> {
     if app.get_webview_window(ACCOUNT_PANEL_LABEL).is_some() {
         return Ok(());
@@ -1978,7 +2183,7 @@ fn show_account_panel(app: AppHandle) -> Result<(), PetError> {
 pub fn run() {
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
-        .user_agent("Sub2API-Pet/0.1")
+        .user_agent("Aira/0.1")
         .build()
         .expect("failed to build HTTP client");
 
@@ -2009,9 +2214,17 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
+                macos_window::speed_up_tooltips();
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 if let Some(main_win) = app.get_webview_window("main") {
                     macos_window::configure_spaces_window(&main_win);
+                    anchor_window_to_right(&main_win, None);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    anchor_window_to_right(&main_win, None);
                 }
             }
 
@@ -2023,7 +2236,7 @@ pub fn run() {
                 .expect("tray icon");
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
-                .tooltip("Sub2API Pet")
+                .tooltip("Aira")
                 .menu(&menu)
                 // Native menu on both left and right click.
                 .show_menu_on_left_click(true)
@@ -2084,10 +2297,11 @@ pub fn run() {
             hide_action_menu,
             show_settings_window,
             hide_settings_window,
-            check_app_update
+            check_app_update,
+            anchor_main_window_right
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Sub2API Pet");
+        .expect("error while running Aira");
 }
 
 #[cfg(test)]
@@ -2310,15 +2524,15 @@ mod tests {
     fn pick_release_asset_prefers_platform_installer() {
         let assets = vec![
             json!({
-                "name": "Sub2API.Pet_0.1.5_amd64.AppImage",
+                "name": "Aira_0.1.5_amd64.AppImage",
                 "browser_download_url": "https://example.com/appimage"
             }),
             json!({
-                "name": "Sub2API.Pet_0.1.5_x64-setup.exe",
+                "name": "Aira_0.1.5_x64-setup.exe",
                 "browser_download_url": "https://example.com/setup.exe"
             }),
             json!({
-                "name": "Sub2API.Pet_0.1.5_universal.dmg",
+                "name": "Aira_0.1.5_universal.dmg",
                 "browser_download_url": "https://example.com/app.dmg"
             }),
         ];

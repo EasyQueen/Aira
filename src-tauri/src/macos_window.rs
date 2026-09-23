@@ -6,6 +6,13 @@ use objc2_app_kit::{
 };
 use tauri::{Manager, Runtime, WebviewWindow};
 
+/// Configures macOS NSInitialToolTipDelay to 100ms for instantaneous tooltip hover display.
+pub fn speed_up_tooltips() {
+    let _ = std::process::Command::new("defaults")
+        .args(["write", "com.sub2api.pet", "NSInitialToolTipDelay", "-int", "100"])
+        .output();
+}
+
 /// Configures the transparent overlay window to join all macOS Desktop Spaces
 /// and float over fullscreen applications.
 pub fn configure_spaces_window<R: Runtime>(window: &WebviewWindow<R>) {

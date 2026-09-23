@@ -9,7 +9,7 @@ const win = getCurrentWindow()
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <nav class="menu-panel" aria-label="宠物操作菜单">
     <header class="menu-header">
-      <span class="menu-title">SUB2API PET</span>
+      <span class="menu-title">AIRA</span>
       <button type="button" class="menu-close" id="menu-close" title="关闭" aria-label="关闭">
         <i data-lucide="x"></i>
       </button>
