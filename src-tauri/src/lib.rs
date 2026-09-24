@@ -1711,7 +1711,7 @@ fn hide_settings_window(app: AppHandle) -> Result<(), PetError> {
 }
 
 const GITHUB_LATEST_RELEASE: &str =
-    "https://api.github.com/repos/boycott96/sub2api-token/releases/latest";
+    "https://api.github.com/repos/EasyQueen/Aira/releases/latest";
 
 #[derive(Debug, Serialize)]
 struct AppUpdateInfo {
@@ -1777,7 +1777,7 @@ fn pick_release_asset(assets: &[Value]) -> Option<String> {
             return Some((*url).to_string());
         }
     }
-    urls.first().map(|(_, url)| (*url).to_string())
+    None
 }
 
 /// Check GitHub Releases for a newer app version (no signed updater required).
@@ -2329,6 +2329,21 @@ mod tests {
         let account = account_from_value(&item).unwrap();
         let row = empty_row(&account);
         assert_eq!(row.last_used_at.as_deref(), Some("2026-09-24T01:00:00Z"));
+    }
+
+    #[test]
+    fn release_asset_does_not_fall_back_to_another_platform() {
+        #[cfg(not(target_os = "linux"))]
+        let assets = vec![json!({
+            "name": "Aira_0.1.7_amd64.deb",
+            "browser_download_url": "https://example.com/aira.deb"
+        })];
+        #[cfg(target_os = "linux")]
+        let assets = vec![json!({
+            "name": "Aira_0.1.7_x64-setup.exe",
+            "browser_download_url": "https://example.com/aira.exe"
+        })];
+        assert_eq!(pick_release_asset(&assets), None);
     }
 
     #[test]
