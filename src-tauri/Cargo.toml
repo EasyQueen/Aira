@@ -1,6 +1,7 @@
 [package]
 name = "aira"
 version = "0.1.7"
+license = "MIT"
 description = "Always-on-top Codex weekly quota companion for Sub2API"
 authors = ["Aira"]
 edition = "2021"

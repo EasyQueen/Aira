@@ -57,3 +57,5 @@ npm run tauri build
 ## 来源
 
 本项目基于 [boycott96/sub2api-token](https://github.com/boycott96/sub2api-token) 修改，保留了上游提交历史。跨屏贴边与最近使用提示为后续改动。
+
+本仓库在取得上游作者授权后按 [MIT License](LICENSE) 发布。原作者和后续贡献者的署名保留在提交历史中。
