@@ -323,6 +323,21 @@ html.is-dragging * {
   transition: opacity 120ms cubic-bezier(0.2, 0, 0.2, 1), transform 120ms cubic-bezier(0.2, 0, 0.2, 1);
 }
 
+.ring-badge.is-recently-used:not(:hover) .ring-center-icon {
+  animation: recent-use-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes recent-use-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.58; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-badge.is-recently-used:not(:hover) .ring-center-icon {
+    animation: none;
+  }
+}
+
 .ring-badge:hover .ring-center-icon {
   opacity: 0;
   transform: scale(0.65);

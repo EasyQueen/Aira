@@ -35,6 +35,7 @@ interface PetSettings {
   maxDisplayAccounts: number
   /** Auto refresh interval in seconds. */
   refreshIntervalSec: number
+  recentUseMinutes: number
   /** Which model families appear on the pet / tray. Default: all on. */
   showModels: ModelVisibility
   /**
@@ -70,6 +71,7 @@ interface AccountQuotaRow {
   remaining_percent?: number | null
   windows?: QuotaWindow[]
   updated_at?: string | null
+  last_used_at?: string | null
   source?: 'active' | 'cached' | string | null
 }
 
@@ -95,6 +97,7 @@ const defaultSettings: PetSettings = {
   autoStart: false,
   maxDisplayAccounts: 5,
   refreshIntervalSec: 30,
+  recentUseMinutes: 3,
   showModels: { ...defaultShowModels },
   cardOpacity: 1.0,
 }
@@ -109,6 +112,7 @@ const REFRESH_INTERVAL_OPTIONS = [
   { value: 300, label: '5 分钟' },
   { value: 600, label: '10 分钟' },
 ] as const
+const RECENT_USE_OPTIONS = [1, 2, 3, 5, 10, 15, 30] as const
 
 let settings = { ...defaultSettings }
 let appStore: Store | null = null
@@ -234,6 +238,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
               <select id="refresh-interval"></select>
               <small class="field-hint">自动同步缓存额度的时间间隔</small>
             </label>
+            <label class="field setting-select-field">
+              <span>最近使用判定</span>
+              <select id="recent-use-minutes"></select>
+              <small class="field-hint">账号在此时间内使用过时，Logo 轻微呼吸</small>
+            </label>
             <label class="field setting-select-field card-opacity-field">
               <span>卡片不透明度</span>
               <div class="opacity-row">
@@ -350,6 +359,7 @@ const cardOpacityInput = element<HTMLInputElement>('#card-opacity')
 const cardOpacityLabel = element<HTMLElement>('#card-opacity-label')
 const maxDisplayAccountsInput = element<HTMLSelectElement>('#max-display-accounts')
 const refreshIntervalInput = element<HTMLSelectElement>('#refresh-interval')
+const recentUseInput = element<HTMLSelectElement>('#recent-use-minutes')
 const refreshHint = element<HTMLElement>('#refresh-hint')
 const formError = element<HTMLElement>('#form-error')
 const connectButton = element<HTMLButtonElement>('#connect-button')
@@ -536,6 +546,12 @@ function clampRefreshInterval(value: unknown): number {
   return Math.max(10, Math.min(3600, Math.round(n)))
 }
 
+function clampRecentUseMinutes(value: unknown): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return defaultSettings.recentUseMinutes
+  return Math.max(1, Math.min(30, Math.round(n)))
+}
+
 /** Accept 0–1 or 0–100; clamp to 0–1 for storage. */
 function clampCardOpacity(value: unknown): number {
   const n = Number(value)
@@ -571,6 +587,7 @@ function normalizeSettings(raw: Partial<PetSettings> | null | undefined): PetSet
     ...raw,
     maxDisplayAccounts: clampDisplayAccounts(raw?.maxDisplayAccounts),
     refreshIntervalSec: clampRefreshInterval(raw?.refreshIntervalSec),
+    recentUseMinutes: clampRecentUseMinutes(raw?.recentUseMinutes),
     showModels: normalizeShowModels(raw?.showModels),
     cardOpacity: clampCardOpacity(raw?.cardOpacity),
   }
@@ -623,6 +640,13 @@ function populateSettingSelects(): void {
     option.value = String(item.value)
     option.textContent = item.label
     refreshIntervalInput.append(option)
+  }
+  recentUseInput.replaceChildren()
+  for (const minutes of RECENT_USE_OPTIONS) {
+    const option = document.createElement('option')
+    option.value = String(minutes)
+    option.textContent = `${minutes} 分钟`
+    recentUseInput.append(option)
   }
 }
 
@@ -759,6 +783,7 @@ function mockPoolRows(): AccountQuotaRow[] {
         },
       ],
       updated_at: new Date().toISOString(),
+      last_used_at: new Date(Date.now() - 45_000).toISOString(),
       source: 'cached',
     },
     {
@@ -778,6 +803,7 @@ function mockPoolRows(): AccountQuotaRow[] {
         },
       ],
       updated_at: new Date().toISOString(),
+      last_used_at: new Date(Date.now() - 6 * 60_000).toISOString(),
       source: 'cached',
     },
     {
@@ -823,6 +849,20 @@ function latestUpdatedAt(): string | null {
   return latestIso
 }
 
+function wasRecentlyUsed(lastUsedAt: string | null | undefined, now = Date.now()): boolean {
+  if (!lastUsedAt) return false
+  const elapsed = now - Date.parse(lastUsedAt)
+  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed < settings.recentUseMinutes * 60_000
+}
+
+function syncRecentUseIndicators(): void {
+  const now = Date.now()
+  for (const badge of accountList.querySelectorAll<HTMLElement>('.ring-badge')) {
+    badge.classList.toggle('is-recently-used',
+      !badge.classList.contains('is-inactive') && wasRecentlyUsed(badge.dataset.lastUsedAt, now))
+  }
+}
+
 interface ModelIconInfo {
   path: string
   viewBox: string
@@ -865,6 +905,8 @@ function createRingBadge(row: AccountQuotaRow): HTMLElement {
   badge.className = `ring-badge model-${model}${isInactive ? ' is-inactive' : ''}`
   badge.setAttribute('role', 'listitem')
   badge.dataset.name = row.name
+  badge.dataset.lastUsedAt = row.last_used_at ?? ''
+  badge.classList.toggle('is-recently-used', !isInactive && wasRecentlyUsed(row.last_used_at))
 
   let ringsHtml = ''
   let hoverQuotaHtml = ''
@@ -1253,6 +1295,7 @@ function fillInPageSettingsForm(): void {
   writeCardOpacityToForm(settings.cardOpacity)
   maxDisplayAccountsInput.value = String(clampDisplayAccounts(settings.maxDisplayAccounts))
   refreshIntervalInput.value = String(clampRefreshInterval(settings.refreshIntervalSec))
+  recentUseInput.value = String(clampRecentUseMinutes(settings.recentUseMinutes))
   if (![...refreshIntervalInput.options].some((option) => option.value === refreshIntervalInput.value)) {
     const option = document.createElement('option')
     option.value = refreshIntervalInput.value
@@ -1413,6 +1456,7 @@ async function saveConnectedSettings(): Promise<void> {
   settings.cardOpacity = clampCardOpacity(Number(cardOpacityInput.value) / 100)
   settings.maxDisplayAccounts = clampDisplayAccounts(maxDisplayAccountsInput.value)
   settings.refreshIntervalSec = clampRefreshInterval(refreshIntervalInput.value)
+  settings.recentUseMinutes = clampRecentUseMinutes(recentUseInput.value)
   applyCardOpacity()
   if (isDesktop) {
     await getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop)
@@ -1731,6 +1775,7 @@ if (isDesktop) {
 
 async function initialize(): Promise<void> {
   await loadSettings()
+  window.setInterval(syncRecentUseIndicators, 10_000)
   await loadAppVersion()
   if (isDesktop) {
     const win = getCurrentWindow()
