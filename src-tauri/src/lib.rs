@@ -554,7 +554,7 @@ fn parse_cached_quota(
         .get("codex_usage_updated_at")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+        .unwrap_or_default();
     Some(QuotaSnapshot {
         account_id,
         account_name,
@@ -817,7 +817,7 @@ fn parse_grok_quota(
         remaining_percent: (100.0 - used).max(0.0),
         reset_at,
         updated_at: updated_at
-            .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)),
+            .unwrap_or_default(),
         source: source.to_string(),
         window_label: Some(window_label.to_string()),
     })
@@ -902,7 +902,13 @@ fn parse_usage_quota(
         .get("updated_at")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+        .unwrap_or_else(|| {
+            if source == "active" {
+                Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+            } else {
+                String::new()
+            }
+        });
     Some(QuotaSnapshot {
         account_id,
         account_name,
@@ -950,7 +956,7 @@ fn snapshot_to_row(snapshot: QuotaSnapshot, account: &PoolAccount) -> AccountQuo
     row_from_windows(
         account,
         windows,
-        Some(snapshot.updated_at),
+        (!snapshot.updated_at.is_empty()).then_some(snapshot.updated_at),
         Some(snapshot.source),
     )
 }
@@ -975,7 +981,9 @@ fn usage_to_row(account: &PoolAccount, usage: &Value, source: &str) -> AccountQu
         .get("updated_at")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)));
+        .or_else(|| {
+            (source == "active").then(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true))
+        });
     row_from_windows(&row_account, windows, updated_at, Some(source.to_string()))
 }
 
@@ -1040,9 +1048,8 @@ async fn quota_for_openai_account(
             let updated_at = item
                 .pointer("/extra/codex_usage_updated_at")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
-            return row_from_windows(account, windows, Some(updated_at), Some("cached".into()));
+                .map(str::to_string);
+            return row_from_windows(account, windows, updated_at, Some("cached".into()));
         }
         if let Some(snapshot) = parse_cached_quota(account.id, account.name.clone(), item) {
             return snapshot_to_row(snapshot, account);
@@ -1061,9 +1068,8 @@ async fn quota_for_openai_account(
             let updated_at = detail
                 .pointer("/extra/codex_usage_updated_at")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
-            return row_from_windows(account, windows, Some(updated_at), Some("cached".into()));
+                .map(str::to_string);
+            return row_from_windows(account, windows, updated_at, Some("cached".into()));
         }
         if let Some(snapshot) = parse_cached_quota(account.id, account.name.clone(), &detail) {
             return snapshot_to_row(snapshot, account);
@@ -2363,6 +2369,25 @@ mod tests {
         assert_eq!(snapshot.remaining_percent, 57.5);
         assert_eq!(snapshot.reset_at.as_deref(), Some("2026-07-26T08:00:00Z"));
         assert_eq!(snapshot.window_label.as_deref(), Some("7d"));
+    }
+
+    #[test]
+    fn cached_quota_without_source_timestamp_is_not_marked_fresh() {
+        let account = json!({
+            "extra": { "codex_7d_used_percent": 75.0 }
+        });
+        let snapshot = parse_cached_quota(7, "Main".into(), &account).unwrap();
+        assert!(snapshot.updated_at.is_empty());
+
+        let account = account_from_value(&json!({
+            "id": 7,
+            "name": "Claude Main",
+            "platform": "anthropic",
+            "type": "oauth"
+        })).unwrap();
+        let usage = json!({ "five_hour": { "utilization": 25.0 } });
+        let row = usage_to_row(&account, &usage, "cached");
+        assert!(row.updated_at.is_none());
     }
 
     #[test]

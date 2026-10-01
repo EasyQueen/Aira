@@ -1,4 +1,5 @@
 import './style.css'
+import { mergeQuotaRows } from './quotaFreshness'
 import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
@@ -117,6 +118,7 @@ const RECENT_USE_OPTIONS = [1, 2, 3, 5, 10, 15, 30] as const
 let settings = { ...defaultSettings }
 let appStore: Store | null = null
 let poolRows: AccountQuotaRow[] = []
+const activeObservedAt = new Map<number, number>()
 let connected = false
 let settingsOpen = false
 let refreshing = false
@@ -1144,7 +1146,7 @@ async function syncTrayMenu(options?: { refreshing?: boolean }): Promise<void> {
   }
 }
 
-async function refreshQuota(force: boolean): Promise<void> {
+async function refreshQuota(force: boolean, notify = force): Promise<void> {
   if (refreshing || !connected) return
   refreshing = true
   // Tooltip-only "syncing" indicator — backend skips full tray menu rebuild for this flag.
@@ -1152,16 +1154,17 @@ async function refreshQuota(force: boolean): Promise<void> {
   quotaDock.classList.add('is-refreshing')
   meterCard.classList.add('is-refreshing')
   try {
-    poolRows = isDesktop
+    const incomingRows = isDesktop
       ? await invoke<AccountQuotaRow[]>('refresh_pool_quotas', { force })
       : mockPoolRows().map((row) => ({
           ...row,
           source: force ? 'active' : 'cached',
           updated_at: new Date().toISOString(),
         }))
+    poolRows = mergeQuotaRows(poolRows, incomingRows, activeObservedAt, Date.now())
     renderPool()
     if (!settingsOpen) await applyWindowSize()
-    if (force) {
+    if (notify) {
       showToast(`已更新 ${poolRows.length} 个账号额度`)
     }
   } catch (error) {
@@ -1179,6 +1182,15 @@ function startAutoRefresh(): void {
   window.clearInterval(autoRefreshTimer)
   const intervalMs = clampRefreshInterval(settings.refreshIntervalSec) * 1000
   autoRefreshTimer = window.setInterval(() => void refreshQuota(false), intervalMs)
+}
+
+function hasStaleStartupQuota(): boolean {
+  const oldestAllowed = Date.now() - Math.max(5 * 60_000, 2 * clampRefreshInterval(settings.refreshIntervalSec) * 1000)
+  return poolRows.length === 0 || poolRows.some((row) => {
+    if (row.source !== 'cached') return false
+    const updatedAt = Date.parse(row.updated_at ?? '')
+    return !Number.isFinite(updatedAt) || updatedAt < oldestAllowed
+  })
 }
 
 function generateDockPath(w: number, h: number): string {
@@ -1366,6 +1378,7 @@ async function onSettingsChanged(kind: string, payload?: unknown): Promise<void>
 
   if (kind === 'login') {
     connected = true
+    activeObservedAt.clear()
     settingsOpen = false
     renderPool()
     await refreshQuota(true)
@@ -1378,6 +1391,7 @@ async function onSettingsChanged(kind: string, payload?: unknown): Promise<void>
   if (kind === 'logout') {
     connected = false
     poolRows = []
+    activeObservedAt.clear()
     window.clearInterval(autoRefreshTimer)
     renderPool()
     await applyWindowSize()
@@ -1742,6 +1756,7 @@ element('#logout-button').addEventListener('click', async () => {
   window.clearInterval(autoRefreshTimer)
   connected = false
   poolRows = []
+  activeObservedAt.clear()
   await saveSettings()
   renderPool()
   await setSettingsOpen(true)
@@ -1803,6 +1818,7 @@ async function initialize(): Promise<void> {
     renderPool()
     await refreshQuota(false)
     await applyWindowSize()
+    if (isDesktop && hasStaleStartupQuota()) void refreshQuota(true, false)
     if (pendingUpdateInfo?.available) {
       window.setTimeout(() => showUpdateBubble(pendingUpdateInfo!, true), 600)
     }

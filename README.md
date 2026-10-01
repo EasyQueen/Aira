@@ -48,6 +48,7 @@ npm run tauri dev
 
 ```bash
 npm run build
+npm run test:quota
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm run tauri build
 ```
