@@ -1196,9 +1196,11 @@ function hasStaleStartupQuota(): boolean {
 function generateDockPath(w: number, h: number): string {
   // Let each shoulder taper smoothly into the screen edge. The vertical
   // tangent at either end avoids a hard corner; the lower half mirrors it.
+  // The screen-side edge runs straight just past the window so the fill covers
+  // the last pixel column and its stroke is clipped off-screen.
   const x = (value: number) => Number(((value / 52) * w).toFixed(2))
+  const outside = w + 2
   const bottom = (value: number) => h - value
-  const middle = h / 2
 
   return [
     `M ${w} 0`,
@@ -1209,8 +1211,8 @@ function generateDockPath(w: number, h: number): string {
     `C 0 ${bottom(48)}, 0 ${bottom(43)}, ${x(1)} ${bottom(38)}`,
     `C ${x(3)} ${bottom(28)}, ${x(13)} ${bottom(22)}, ${x(25)} ${bottom(22)}`,
     `C ${x(39)} ${bottom(22)}, ${w} ${bottom(12)}, ${w} ${h}`,
-    `C ${w} ${bottom(40)}, ${x(51)} ${middle + 22}, ${x(51)} ${middle}`,
-    `C ${x(51)} ${middle - 22}, ${w} 40, ${w} 0`,
+    `L ${outside} ${h}`,
+    `L ${outside} 0`,
     `Z`,
   ].join(' ')
 }
