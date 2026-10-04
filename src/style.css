@@ -326,12 +326,12 @@ html.is-dragging * {
 }
 
 .ring-badge.is-recently-used:not(:hover) .ring-center-icon {
-  animation: recent-use-spin 8s linear infinite;
+  animation: recent-use-spin 6s linear infinite;
 }
 
 @keyframes recent-use-spin {
   from { transform: rotate(0deg); }
-  to { transform: rotate(-360deg); }
+  to { transform: rotate(360deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {

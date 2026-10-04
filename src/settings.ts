@@ -211,7 +211,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
             <label class="field setting-select-field">
               <span>最近使用判定</span>
               <select id="recent-use-minutes"></select>
-              <small class="field-hint">账号在此时间内使用过时，Logo 逆时针缓慢旋转</small>
+              <small class="field-hint">账号在此时间内使用过时，Logo 顺时针旋转，每 6 秒一圈</small>
             </label>
             <label class="field setting-select-field card-opacity-field">
               <span>卡片不透明度</span>
