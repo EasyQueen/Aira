@@ -243,7 +243,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
             <label class="field setting-select-field">
               <span>最近使用判定</span>
               <select id="recent-use-minutes"></select>
-              <small class="field-hint">账号在此时间内使用过时，Logo 轻微呼吸</small>
+              <small class="field-hint">账号在此时间内使用过时，Logo 逆时针缓慢旋转</small>
             </label>
             <label class="field setting-select-field card-opacity-field">
               <span>卡片不透明度</span>
@@ -260,7 +260,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
                 />
                 <span class="opacity-value" id="card-opacity-label">62%</span>
               </div>
-              <small class="field-hint">柱状图背景卡片：0% 全透明，100% 不透明</small>
+              <small class="field-hint">浮窗背景：0% 全透明，100% 不透明；Logo 和额度圆环保持可见</small>
             </label>
             <label class="switch-line">
               <span><strong>始终置顶</strong><small>宠物保持在其他窗口上方</small></span>
@@ -1165,7 +1165,7 @@ async function refreshQuota(force: boolean, notify = force): Promise<void> {
     renderPool()
     if (!settingsOpen) await applyWindowSize()
     if (notify) {
-      showToast(`已更新 ${poolRows.length} 个账号额度`)
+      showToast('已更新')
     }
   } catch (error) {
     showToast(errorMessage(error), 'error')
